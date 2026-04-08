@@ -1,6 +1,6 @@
 # =============================================================================
 # fireflies_client.py — Fireflies transcript fetch
-# Queries the previous Mon–Sun window and cross-references reps by email.
+# Fix: Fireflies GraphQL API expects Unix timestamp integers, not ISO strings
 # =============================================================================
 
 import os
@@ -8,48 +8,46 @@ import requests
 from datetime import datetime, timedelta, timezone
 from config import REPS, OWNER_IDS
 
-
 FIREFLIES_URL = "https://api.fireflies.ai/graphql"
 
-# Map rep email → owner_id for cross-referencing transcripts
 EMAIL_TO_OWNER_ID = {r["email"]: r["owner_id"] for r in REPS}
 
 
-def _get_previous_week_range() -> tuple[str, str]:
+def _get_previous_week_range() -> tuple[int, int]:
     """
-    Returns (from_date, to_date) as ISO date strings for the previous Mon–Sun.
-    E.g. if today is Monday April 7 → returns "2026-03-30", "2026-04-05"
+    Returns (from_ts, to_ts) as Unix timestamp integers in milliseconds.
+    Fireflies API requires integer timestamps, not ISO date strings.
+    Covers previous Monday 00:00 UTC → previous Sunday 23:59:59 UTC.
     """
-    today = datetime.now(tz=timezone.utc).date()
-    # Most recent Monday (today if Monday, else go back)
+    today             = datetime.now(tz=timezone.utc).date()
     days_since_monday = today.weekday()
-    this_monday = today - timedelta(days=days_since_monday)
-    last_monday = this_monday - timedelta(days=7)
-    last_sunday = this_monday - timedelta(days=1)
-    return last_monday.isoformat(), last_sunday.isoformat()
+    this_monday       = today - timedelta(days=days_since_monday)
+    last_monday       = this_monday - timedelta(days=7)
+    last_sunday       = this_monday - timedelta(days=1)
+
+    from_dt = datetime(last_monday.year, last_monday.month, last_monday.day,
+                       0, 0, 0, tzinfo=timezone.utc)
+    to_dt   = datetime(last_sunday.year, last_sunday.month, last_sunday.day,
+                       23, 59, 59, tzinfo=timezone.utc)
+
+    return int(from_dt.timestamp() * 1000), int(to_dt.timestamp() * 1000)
 
 
 def fetch_transcripts() -> dict:
-    """
-    Fetch Fireflies transcripts for the previous week.
-    Returns a dict keyed by owner_id:
-    {
-        owner_id: {
-            "count":  int,
-            "status": "OK" | "NO CALLS RECORDED" | "NO DATA",
-        }
-    }
-    """
     api_key = os.environ.get("FIREFLIES_API_KEY", "")
     if not api_key:
         print("  [Fireflies] No API key — skipping.")
         return {oid: {"count": 0, "status": "NO DATA"} for oid in OWNER_IDS}
 
-    from_date, to_date = _get_previous_week_range()
-    print(f"\n[Fireflies] Fetching transcripts {from_date} → {to_date}...")
+    from_ts, to_ts = _get_previous_week_range()
 
+    from_dt_str = datetime.fromtimestamp(from_ts / 1000, tz=timezone.utc).strftime('%Y-%m-%d')
+    to_dt_str   = datetime.fromtimestamp(to_ts   / 1000, tz=timezone.utc).strftime('%Y-%m-%d')
+    print(f"\n[Fireflies] Fetching transcripts {from_dt_str} → {to_dt_str}...")
+
+    # Fireflies GraphQL — fromDate/toDate must be Unix ms integers
     query = """
-    query Transcripts($fromDate: String, $toDate: String) {
+    query Transcripts($fromDate: Long, $toDate: Long) {
       transcripts(fromDate: $fromDate, toDate: $toDate, limit: 100) {
         id
         title
@@ -65,46 +63,57 @@ def fetch_transcripts() -> dict:
     try:
         resp = requests.post(
             FIREFLIES_URL,
-            json={"query": query, "variables": {"fromDate": from_date, "toDate": to_date}},
+            json={
+                "query":     query,
+                "variables": {"fromDate": from_ts, "toDate": to_ts},
+            },
             headers={
                 "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
+                "Content-Type":  "application/json",
             },
             timeout=30,
         )
+
+        # Print response for debugging if not 200
+        if resp.status_code != 200:
+            print(f"  [Fireflies] HTTP {resp.status_code}: {resp.text[:300]}")
+            return {oid: {"count": 0, "status": "NO DATA"} for oid in OWNER_IDS}
+
         resp.raise_for_status()
         data = resp.json()
+
+        # Check for GraphQL errors
+        if "errors" in data:
+            print(f"  [Fireflies] GraphQL errors: {data['errors']}")
+            return {oid: {"count": 0, "status": "NO DATA"} for oid in OWNER_IDS}
+
     except Exception as e:
-        print(f"  [Fireflies] Error fetching transcripts: {e}")
+        print(f"  [Fireflies] Error: {e}")
         return {oid: {"count": 0, "status": "NO DATA"} for oid in OWNER_IDS}
 
     transcripts = data.get("data", {}).get("transcripts", []) or []
     print(f"  Found {len(transcripts)} transcripts total.")
 
-    # Count transcripts per rep by matching organizer_email or participant emails
     counts: dict[str, int] = {oid: 0 for oid in OWNER_IDS}
 
     for t in transcripts:
-        matched_owners = set()
+        matched = set()
 
-        # Check organizer
         org_email = (t.get("organizer_email") or "").lower()
         if org_email in EMAIL_TO_OWNER_ID:
-            matched_owners.add(EMAIL_TO_OWNER_ID[org_email])
+            matched.add(EMAIL_TO_OWNER_ID[org_email])
 
-        # Check all participants
         for p in t.get("participants") or []:
             p_email = (p.get("email") or "").lower()
             if p_email in EMAIL_TO_OWNER_ID:
-                matched_owners.add(EMAIL_TO_OWNER_ID[p_email])
+                matched.add(EMAIL_TO_OWNER_ID[p_email])
 
-        for oid in matched_owners:
+        for oid in matched:
             counts[oid] += 1
 
-    # Build final result
     result = {}
     for oid in OWNER_IDS:
-        count = counts[oid]
+        count  = counts[oid]
         result[oid] = {
             "count":  count,
             "status": "OK" if count > 0 else "NO CALLS RECORDED",
