@@ -1,6 +1,7 @@
 # =============================================================================
 # fireflies_client.py — Fireflies transcript fetch
-# Fix: Fireflies GraphQL API expects Unix timestamp integers, not ISO strings
+# Fix: use String type with ISO date, fetch last 50 and filter in Python
+# Fireflies does not support custom scalar types like Long in their schema
 # =============================================================================
 
 import os
@@ -13,11 +14,10 @@ FIREFLIES_URL = "https://api.fireflies.ai/graphql"
 EMAIL_TO_OWNER_ID = {r["email"]: r["owner_id"] for r in REPS}
 
 
-def _get_previous_week_range() -> tuple[int, int]:
+def _get_previous_week_bounds() -> tuple[datetime, datetime, str, str]:
     """
-    Returns (from_ts, to_ts) as Unix timestamp integers in milliseconds.
-    Fireflies API requires integer timestamps, not ISO date strings.
-    Covers previous Monday 00:00 UTC → previous Sunday 23:59:59 UTC.
+    Returns (from_dt, to_dt, from_str, to_str) for the previous Mon–Sun.
+    Dates used both for display and for Python-side filtering of results.
     """
     today             = datetime.now(tz=timezone.utc).date()
     days_since_monday = today.weekday()
@@ -30,25 +30,29 @@ def _get_previous_week_range() -> tuple[int, int]:
     to_dt   = datetime(last_sunday.year, last_sunday.month, last_sunday.day,
                        23, 59, 59, tzinfo=timezone.utc)
 
-    return int(from_dt.timestamp() * 1000), int(to_dt.timestamp() * 1000)
+    return from_dt, to_dt, last_monday.isoformat(), last_sunday.isoformat()
 
 
 def fetch_transcripts() -> dict:
+    """
+    Fetch Fireflies transcripts for the previous week.
+    Strategy: fetch the 50 most recent transcripts (no date filter in GraphQL
+    since Fireflies schema varies), then filter by date in Python.
+    Returns dict keyed by owner_id: {"count": int, "status": str}
+    """
     api_key = os.environ.get("FIREFLIES_API_KEY", "")
     if not api_key:
         print("  [Fireflies] No API key — skipping.")
         return {oid: {"count": 0, "status": "NO DATA"} for oid in OWNER_IDS}
 
-    from_ts, to_ts = _get_previous_week_range()
+    from_dt, to_dt, from_str, to_str = _get_previous_week_bounds()
+    print(f"\n[Fireflies] Fetching transcripts {from_str} → {to_str}...")
 
-    from_dt_str = datetime.fromtimestamp(from_ts / 1000, tz=timezone.utc).strftime('%Y-%m-%d')
-    to_dt_str   = datetime.fromtimestamp(to_ts   / 1000, tz=timezone.utc).strftime('%Y-%m-%d')
-    print(f"\n[Fireflies] Fetching transcripts {from_dt_str} → {to_dt_str}...")
-
-    # Fireflies GraphQL — fromDate/toDate must be Unix ms integers
+    # Simple query without date variables — avoids schema type issues
+    # Fetch last 50 transcripts and filter by date in Python
     query = """
-    query Transcripts($fromDate: Long, $toDate: Long) {
-      transcripts(fromDate: $fromDate, toDate: $toDate, limit: 100) {
+    {
+      transcripts(limit: 50) {
         id
         title
         date
@@ -63,10 +67,7 @@ def fetch_transcripts() -> dict:
     try:
         resp = requests.post(
             FIREFLIES_URL,
-            json={
-                "query":     query,
-                "variables": {"fromDate": from_ts, "toDate": to_ts},
-            },
+            json={"query": query},
             headers={
                 "Authorization": f"Bearer {api_key}",
                 "Content-Type":  "application/json",
@@ -74,26 +75,41 @@ def fetch_transcripts() -> dict:
             timeout=30,
         )
 
-        # Print response for debugging if not 200
         if resp.status_code != 200:
-            print(f"  [Fireflies] HTTP {resp.status_code}: {resp.text[:300]}")
+            print(f"  [Fireflies] HTTP {resp.status_code} — {resp.text[:400]}")
             return {oid: {"count": 0, "status": "NO DATA"} for oid in OWNER_IDS}
 
-        resp.raise_for_status()
         data = resp.json()
 
-        # Check for GraphQL errors
         if "errors" in data:
             print(f"  [Fireflies] GraphQL errors: {data['errors']}")
             return {oid: {"count": 0, "status": "NO DATA"} for oid in OWNER_IDS}
 
     except Exception as e:
-        print(f"  [Fireflies] Error: {e}")
+        print(f"  [Fireflies] Request failed: {e}")
         return {oid: {"count": 0, "status": "NO DATA"} for oid in OWNER_IDS}
 
-    transcripts = data.get("data", {}).get("transcripts", []) or []
-    print(f"  Found {len(transcripts)} transcripts total.")
+    all_transcripts = data.get("data", {}).get("transcripts", []) or []
+    print(f"  Fetched {len(all_transcripts)} recent transcripts — filtering to {from_str} → {to_str}...")
 
+    # Filter to previous week's window in Python
+    # Fireflies 'date' field is a Unix timestamp in milliseconds
+    transcripts = []
+    for t in all_transcripts:
+        raw_date = t.get("date")
+        if raw_date is None:
+            continue
+        try:
+            ts_ms   = int(raw_date)
+            t_dt    = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc)
+            if from_dt <= t_dt <= to_dt:
+                transcripts.append(t)
+        except (ValueError, OSError):
+            continue
+
+    print(f"  {len(transcripts)} transcript(s) in the target week.")
+
+    # Count per rep by matching organizer_email or participant emails
     counts: dict[str, int] = {oid: 0 for oid in OWNER_IDS}
 
     for t in transcripts:

@@ -1,5 +1,7 @@
 # =============================================================================
 # email_client.py — SendGrid email notifications
+# Fix: deduplicate To/CC before sending — SendGrid rejects if same address
+# appears in both To: and CC:
 # =============================================================================
 
 import os
@@ -9,7 +11,7 @@ import sendgrid
 from sendgrid.helpers.mail import Mail, To, Cc, Content
 from datetime import datetime, timedelta, timezone
 from config import (
-    ARI, EMAIL_CC, EMAIL_FROM_ADDRESS, EMAIL_FROM_NAME,
+    EMAIL_CC, EMAIL_FROM_ADDRESS, EMAIL_FROM_NAME,
     REPS, IS_DEV, resolve_email, message_prefix,
 )
 
@@ -19,12 +21,21 @@ MAX_CONTACTS_SHOWN = 10
 
 
 def _week_label() -> str:
-    today        = datetime.now(tz=timezone.utc)
-    last_monday  = today - timedelta(days=today.weekday() + 7)
-    last_sunday  = last_monday + timedelta(days=6)
+    today       = datetime.now(tz=timezone.utc)
+    last_monday = today - timedelta(days=today.weekday() + 7)
+    last_sunday = last_monday + timedelta(days=6)
     if last_monday.month == last_sunday.month:
         return f"{last_monday.strftime('%B %-d')} – {last_sunday.strftime('%-d, %Y')}"
     return f"{last_monday.strftime('%B %-d')} – {last_sunday.strftime('%B %-d, %Y')}"
+
+
+def _deduped_cc(to_email: str, cc_list: list) -> list:
+    """
+    Remove any address from CC that already appears in To:.
+    SendGrid returns 400 if the same address is in both To and CC.
+    """
+    to_lower = to_email.lower()
+    return [addr for addr in cc_list if addr.lower() != to_lower]
 
 
 STYLE = """
@@ -72,9 +83,9 @@ STYLE = """
 """
 
 
-def _count_class(n):
-    if n == 0:   return "green"
-    if n < 10:   return "amber"
+def _count_class(n: int) -> str:
+    if n == 0:  return "green"
+    if n < 10:  return "amber"
     return "red"
 
 
@@ -86,14 +97,16 @@ def _build_html_body(rep: dict, data: dict, week_label: str, ff_data: dict) -> s
     dev_banner = ""
     if IS_DEV:
         dev_banner = (
-            f'<div class="dev-banner">⚠️ DEV TEST — Audit for: {rep["name"]} '
-            f'| Owner ID: {rep["owner_id"]} | Prod email: {rep["email"]}</div>'
+            f'<div class="dev-banner">'
+            f'&#9888; DEV TEST &#8212; Audit for: {rep["name"]} | '
+            f'Owner ID: {rep["owner_id"]} | Prod email: {rep["email"]}'
+            f'</div>'
         )
 
-    def badge(n):
+    def badge(n: int) -> str:
         return f'<span class="count {_count_class(n)}">{n}</span>'
 
-    rows = [
+    summary_rows = [
         ("Past-due close date",      len(data["past_due"])),
         ("Stale (14d+ no activity)", len(data["stale"])),
         ("Missing deal amount",      len(data["missing_amount"])),
@@ -102,42 +115,73 @@ def _build_html_body(rep: dict, data: dict, week_label: str, ff_data: dict) -> s
         ("Missing deal status",      len(data["missing_status"])),
         ("Missing lead status",      len(data["missing_lead_status"])),
     ]
-    summary_html = "".join(f"<tr><td>{l}</td><td>{badge(n)}</td></tr>" for l, n in rows)
+    summary_html = "".join(
+        f"<tr><td>{label}</td><td>{badge(n)}</td></tr>"
+        for label, n in summary_rows
+    )
 
+    # Past-due deals
     past_due_html = ""
     if data["past_due"]:
         items = ""
         for d in data["past_due"][:MAX_PAST_DUE_SHOWN]:
-            ds = f"due {d['close_date_str']}" if d["close_date_str"] else "no close date"
-            items += f'<li><a href="{d["url"]}">{d["name"]}</a> <span class="badge red">{ds}</span></li>'
-        _dummy = None
-        extra = f'<p class="more">...and {len(data["past_due"]) - MAX_PAST_DUE_SHOWN} more</p>' if len(data["past_due"]) > MAX_PAST_DUE_SHOWN else ""
-        past_due_html = f'<div class="section-title">Top past-due deals (oldest first)</div><ul class="deal-list">{items}</ul>{extra}'
+            date_str = f"due {d['close_date_str']}" if d["close_date_str"] else "no close date set"
+            items += (
+                f'<li><a href="{d["url"]}">{d["name"]}</a>'
+                f' <span class="badge red">{date_str}</span></li>'
+            )
+        overflow = (
+            f'<p class="more">...and {len(data["past_due"]) - MAX_PAST_DUE_SHOWN} more</p>'
+            if len(data["past_due"]) > MAX_PAST_DUE_SHOWN else ""
+        )
+        past_due_html = (
+            f'<div class="section-title">Top past-due deals (oldest first)</div>'
+            f'<ul class="deal-list">{items}</ul>{overflow}'
+        )
 
+    # Stale deals
     stale_html = ""
     if data["stale"]:
         items = ""
         for d in data["stale"][:MAX_STALE_SHOWN]:
-            act = "no activity ever" if d["days_inactive"] is None else f"{d['days_inactive']}d inactive"
-            items += f'<li><a href="{d["url"]}">{d["name"]}</a> <span class="badge amber">{act}</span></li>'
-        _dummy = None
-        extra = f'<p class="more">...and {len(data["stale"]) - MAX_STALE_SHOWN} more</p>' if len(data["stale"]) > MAX_STALE_SHOWN else ""
-        stale_html = f'<div class="section-title">Top stale deals (worst first)</div><ul class="deal-list">{items}</ul>{extra}'
+            activity = (
+                "no activity ever" if d["days_inactive"] is None
+                else f"{d['days_inactive']}d inactive"
+            )
+            items += (
+                f'<li><a href="{d["url"]}">{d["name"]}</a>'
+                f' <span class="badge amber">{activity}</span></li>'
+            )
+        overflow = (
+            f'<p class="more">...and {len(data["stale"]) - MAX_STALE_SHOWN} more</p>'
+            if len(data["stale"]) > MAX_STALE_SHOWN else ""
+        )
+        stale_html = (
+            f'<div class="section-title">Top stale deals (worst first)</div>'
+            f'<ul class="deal-list">{items}</ul>{overflow}'
+        )
 
+    # Contacts missing lead status
     contacts_html = ""
     if data["missing_lead_status"]:
         items = "".join(
             f'<li><a href="{c["url"]}">{c["name"]}</a></li>'
             for c in data["missing_lead_status"][:MAX_CONTACTS_SHOWN]
         )
-        extra = f'<p class="more">...and {len(data["missing_lead_status"]) - MAX_CONTACTS_SHOWN} more</p>' if len(data["missing_lead_status"]) > MAX_CONTACTS_SHOWN else ""
-        contacts_html = f'<div class="section-title">Contacts missing lead status</div><ul class="deal-list">{items}</ul>{extra}'
+        overflow = (
+            f'<p class="more">...and {len(data["missing_lead_status"]) - MAX_CONTACTS_SHOWN} more</p>'
+            if len(data["missing_lead_status"]) > MAX_CONTACTS_SHOWN else ""
+        )
+        contacts_html = (
+            f'<div class="section-title">Contacts missing lead status</div>'
+            f'<ul class="deal-list">{items}</ul>{overflow}'
+        )
 
-    ff_html = (
-        f'<p class="ff-ok">&#10003; {ff["count"]} Fireflies transcript(s) recorded last week</p>'
-        if ff["status"] == "OK" else
-        '<p class="ff-warn">&#9888; No Fireflies transcripts found. Ensure Fireflies is connected to your calendar.</p>'
-    )
+    # Fireflies
+    if ff["status"] == "OK":
+        ff_html = f'<p class="ff-ok">&#10003; {ff["count"]} Fireflies transcript(s) recorded last week</p>'
+    else:
+        ff_html = '<p class="ff-warn">&#9888; No Fireflies transcripts found. Ensure Fireflies is connected to your calendar.</p>'
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -146,7 +190,7 @@ def _build_html_body(rep: dict, data: dict, week_label: str, ff_data: dict) -> s
 <div class="wrapper">
   {dev_banner}
   <div class="header">
-    <h1>HubSpot Hygiene Audit — {rep['first_name']}</h1>
+    <h1>HubSpot Hygiene Audit &#8212; {rep['first_name']}</h1>
     <p>Week of {week_label} &nbsp;|&nbsp; {open_count} open deals</p>
   </div>
   <div class="body">
@@ -190,24 +234,30 @@ def send_rep_emails(results: dict, ff_data: dict) -> None:
     prefix     = message_prefix()
 
     print(f"\n[Email] Sending per-rep emails...")
-    if IS_DEV:
-        print(f"  [DEV] All emails → {resolve_email(list(results.values())[0]['rep'])} | CC: {EMAIL_CC}")
 
     for oid, data in results.items():
         rep      = data["rep"]
         to_email = resolve_email(rep)
-        dev_note = f" [routing for {rep['name']}]" if IS_DEV else ""
 
-        print(f"  {rep['name']} → {to_email}{dev_note}")
+        # Deduplicate: remove To: address from CC list if it appears there too
+        # SendGrid 400s if the same address is in both To and CC
+        cc_list = _deduped_cc(to_email, EMAIL_CC)
+
+        dev_note = f" [routing for {rep['name']}]" if IS_DEV else ""
+        print(f"  {rep['name']} → To: {to_email} | CC: {cc_list}{dev_note}")
 
         html_body = _build_html_body(rep, data, week_label, ff_data)
 
-        # Build message using add_to / add_cc — most reliable pattern for sendgrid v6
         message = Mail()
         message.from_email = (EMAIL_FROM_ADDRESS, EMAIL_FROM_NAME)
-        message.subject    = f"{prefix}HubSpot Hygiene Audit — {rep['first_name']} — Week of {week_label}{dev_note}"
+        message.subject    = (
+            f"{prefix}HubSpot Hygiene Audit"
+            f" — {rep['first_name']}"
+            f" — Week of {week_label}"
+            f"{dev_note}"
+        )
         message.add_to(To(to_email))
-        for addr in EMAIL_CC:
+        for addr in cc_list:
             message.add_cc(Cc(addr))
         message.add_content(Content("text/html", html_body))
 
@@ -217,12 +267,11 @@ def send_rep_emails(results: dict, ff_data: dict) -> None:
             ok       = 200 <= status < 300
             print(f"  {'Sent ✓' if ok else 'FAILED'} (HTTP {status})")
         except Exception as e:
-            # Print full SendGrid error body for debugging
             print(f"  FAILED — {e}")
-            if hasattr(e, 'body'):
+            if hasattr(e, "body"):
                 try:
                     body = json.loads(e.body)
-                    for err in body.get('errors', []):
+                    for err in body.get("errors", []):
                         print(f"  SendGrid error: [{err.get('field','?')}] {err.get('message','?')}")
                 except Exception:
                     print(f"  Raw error body: {e.body}")
