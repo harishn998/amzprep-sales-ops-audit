@@ -1,14 +1,20 @@
 # =============================================================================
 # email_client.py — SendGrid email notifications
-# Fix: deduplicate To/CC before sending — SendGrid rejects if same address
-# appears in both To: and CC:
+# Spam fixes:
+#   - Added text/plain fallback alongside HTML
+#   - Added List-Unsubscribe header
+#   - Disabled SendGrid click/open tracking (tracking links trigger spam)
+#   - Cleaned subject line — removed [routing for X] machine-generated suffix
 # =============================================================================
 
 import os
 import time
 import json
 import sendgrid
-from sendgrid.helpers.mail import Mail, To, Cc, Content
+from sendgrid.helpers.mail import (
+    Mail, To, Cc, Content, Header,
+    TrackingSettings, ClickTracking, OpenTracking,
+)
 from datetime import datetime, timedelta, timezone
 from config import (
     EMAIL_CC, EMAIL_FROM_ADDRESS, EMAIL_FROM_NAME,
@@ -30,12 +36,75 @@ def _week_label() -> str:
 
 
 def _deduped_cc(to_email: str, cc_list: list) -> list:
-    """
-    Remove any address from CC that already appears in To:.
-    SendGrid returns 400 if the same address is in both To and CC.
-    """
+    """Remove To: address from CC if it appears there — SendGrid rejects duplicates."""
     to_lower = to_email.lower()
     return [addr for addr in cc_list if addr.lower() != to_lower]
+
+
+def _build_plain_text(rep: dict, data: dict, week_label: str, ff_data: dict) -> str:
+    """Plain text fallback — improves spam score vs HTML-only emails."""
+    oid  = rep["owner_id"]
+    ff   = ff_data.get(oid, {"count": 0, "status": "NO DATA"})
+    prefix = message_prefix()
+    dev_note = f"\nDEV TEST — Routing for: {rep['name']} | Prod email: {rep['email']}\n" if IS_DEV else ""
+
+    lines = [
+        f"{prefix}HubSpot Hygiene Audit — {rep['first_name']}",
+        f"Week of {week_label} | {data['open_deals']} open deals",
+        dev_note,
+        "SUMMARY",
+        "-" * 36,
+        f"Past-due close date:       {len(data['past_due'])}",
+        f"Stale (14d+ no activity):  {len(data['stale'])}",
+        f"Missing deal amount:       {len(data['missing_amount'])}",
+        f"Missing pipeline source:   {len(data['missing_source'])}",
+        f"Missing MRR:               {len(data['missing_mrr'])}",
+        f"Missing deal status:       {len(data['missing_status'])}",
+        f"Missing lead status:       {len(data['missing_lead_status'])}",
+        "",
+    ]
+
+    if data["past_due"]:
+        lines.append("TOP PAST-DUE DEALS (oldest first):")
+        for i, d in enumerate(data["past_due"][:MAX_PAST_DUE_SHOWN], 1):
+            date_str = f"due {d['close_date_str']}" if d["close_date_str"] else "no close date"
+            lines.append(f"  {i}. {d['name']} — {date_str}")
+            lines.append(f"     {d['url']}")
+        lines.append("")
+
+    if data["stale"]:
+        lines.append("TOP STALE DEALS (worst first):")
+        for i, d in enumerate(data["stale"][:MAX_STALE_SHOWN], 1):
+            activity = "no activity ever" if d["days_inactive"] is None else f"{d['days_inactive']}d inactive"
+            lines.append(f"  {i}. {d['name']} — {activity}")
+            lines.append(f"     {d['url']}")
+        lines.append("")
+
+    if data["missing_lead_status"]:
+        lines.append("CONTACTS MISSING LEAD STATUS:")
+        for i, c in enumerate(data["missing_lead_status"][:MAX_CONTACTS_SHOWN], 1):
+            lines.append(f"  {i}. {c['name']}")
+            lines.append(f"     {c['url']}")
+        lines.append("")
+
+    ff_line = (
+        f"Fireflies: {ff['count']} transcript(s) recorded last week — OK"
+        if ff["status"] == "OK"
+        else "Fireflies: No transcripts found last week — check calendar connection"
+    )
+    lines.append(ff_line)
+    lines.append("")
+    lines.append("WHAT TO DO:")
+    lines.append("1. Update or close-lost deals with past-due close dates")
+    lines.append("2. Log activity or close-lost stale deals")
+    lines.append("3. Fill in Deal Amount, Pipeline Source, MRR, Deal Status")
+    lines.append("4. Freight-only deals: set MRR to $0")
+    lines.append("5. Assign Lead Status to contacts without one")
+    lines.append("")
+    lines.append("All unresolved issues carry forward weekly until fixed.")
+    lines.append("— AMZ Prep Hygiene Audit")
+
+    return "\n".join(lines)
 
 
 STYLE = """
@@ -99,7 +168,7 @@ def _build_html_body(rep: dict, data: dict, week_label: str, ff_data: dict) -> s
         dev_banner = (
             f'<div class="dev-banner">'
             f'&#9888; DEV TEST &#8212; Audit for: {rep["name"]} | '
-            f'Owner ID: {rep["owner_id"]} | Prod email: {rep["email"]}'
+            f'Prod email: {rep["email"]}'
             f'</div>'
         )
 
@@ -120,16 +189,12 @@ def _build_html_body(rep: dict, data: dict, week_label: str, ff_data: dict) -> s
         for label, n in summary_rows
     )
 
-    # Past-due deals
     past_due_html = ""
     if data["past_due"]:
         items = ""
         for d in data["past_due"][:MAX_PAST_DUE_SHOWN]:
             date_str = f"due {d['close_date_str']}" if d["close_date_str"] else "no close date set"
-            items += (
-                f'<li><a href="{d["url"]}">{d["name"]}</a>'
-                f' <span class="badge red">{date_str}</span></li>'
-            )
+            items += f'<li><a href="{d["url"]}">{d["name"]}</a> <span class="badge red">{date_str}</span></li>'
         overflow = (
             f'<p class="more">...and {len(data["past_due"]) - MAX_PAST_DUE_SHOWN} more</p>'
             if len(data["past_due"]) > MAX_PAST_DUE_SHOWN else ""
@@ -139,19 +204,12 @@ def _build_html_body(rep: dict, data: dict, week_label: str, ff_data: dict) -> s
             f'<ul class="deal-list">{items}</ul>{overflow}'
         )
 
-    # Stale deals
     stale_html = ""
     if data["stale"]:
         items = ""
         for d in data["stale"][:MAX_STALE_SHOWN]:
-            activity = (
-                "no activity ever" if d["days_inactive"] is None
-                else f"{d['days_inactive']}d inactive"
-            )
-            items += (
-                f'<li><a href="{d["url"]}">{d["name"]}</a>'
-                f' <span class="badge amber">{activity}</span></li>'
-            )
+            activity = "no activity ever" if d["days_inactive"] is None else f"{d['days_inactive']}d inactive"
+            items += f'<li><a href="{d["url"]}">{d["name"]}</a> <span class="badge amber">{activity}</span></li>'
         overflow = (
             f'<p class="more">...and {len(data["stale"]) - MAX_STALE_SHOWN} more</p>'
             if len(data["stale"]) > MAX_STALE_SHOWN else ""
@@ -161,7 +219,6 @@ def _build_html_body(rep: dict, data: dict, week_label: str, ff_data: dict) -> s
             f'<ul class="deal-list">{items}</ul>{overflow}'
         )
 
-    # Contacts missing lead status
     contacts_html = ""
     if data["missing_lead_status"]:
         items = "".join(
@@ -177,7 +234,6 @@ def _build_html_body(rep: dict, data: dict, week_label: str, ff_data: dict) -> s
             f'<ul class="deal-list">{items}</ul>{overflow}'
         )
 
-    # Fireflies
     if ff["status"] == "OK":
         ff_html = f'<p class="ff-ok">&#10003; {ff["count"]} Fireflies transcript(s) recorded last week</p>'
     else:
@@ -216,7 +272,7 @@ def _build_html_body(rep: dict, data: dict, week_label: str, ff_data: dict) -> s
   </div>
   <div class="footer">
     All unresolved issues carry forward every week until fixed. &nbsp;|&nbsp;
-    Sent by AMZ Prep Hygiene Audit &nbsp;|&nbsp; amzprep.com
+    AMZ Prep Hygiene Audit &nbsp;|&nbsp; amzprep.com
   </div>
 </div>
 </body>
@@ -234,32 +290,46 @@ def send_rep_emails(results: dict, ff_data: dict) -> None:
     prefix     = message_prefix()
 
     print(f"\n[Email] Sending per-rep emails...")
+    if IS_DEV:
+        print(f"  [DEV] To: {resolve_email(list(results.values())[0]['rep'])} | CC: (deduped per send)")
 
     for oid, data in results.items():
         rep      = data["rep"]
         to_email = resolve_email(rep)
+        cc_list  = _deduped_cc(to_email, EMAIL_CC)
 
-        # Deduplicate: remove To: address from CC list if it appears there too
-        # SendGrid 400s if the same address is in both To and CC
-        cc_list = _deduped_cc(to_email, EMAIL_CC)
+        # Clean subject — no [routing for X] suffix to avoid spam triggers
+        # The DEV banner inside the email body already identifies the rep
+        subject = f"{prefix}HubSpot Hygiene Audit — {rep['first_name']} — Week of {week_label}"
 
-        dev_note = f" [routing for {rep['name']}]" if IS_DEV else ""
-        print(f"  {rep['name']} → To: {to_email} | CC: {cc_list}{dev_note}")
+        print(f"  {rep['name']} → To: {to_email} | CC: {cc_list}")
 
-        html_body = _build_html_body(rep, data, week_label, ff_data)
+        html_body  = _build_html_body(rep, data, week_label, ff_data)
+        plain_body = _build_plain_text(rep, data, week_label, ff_data)
 
         message = Mail()
         message.from_email = (EMAIL_FROM_ADDRESS, EMAIL_FROM_NAME)
-        message.subject    = (
-            f"{prefix}HubSpot Hygiene Audit"
-            f" — {rep['first_name']}"
-            f" — Week of {week_label}"
-            f"{dev_note}"
-        )
+        message.subject    = subject
         message.add_to(To(to_email))
         for addr in cc_list:
             message.add_cc(Cc(addr))
-        message.add_content(Content("text/html", html_body))
+
+        # Add both plain text AND html — improves spam score vs HTML-only
+        message.add_content(Content("text/plain", plain_body))
+        message.add_content(Content("text/html",  html_body))
+
+        # Disable click and open tracking — tracking pixels/links hurt
+        # deliverability for internal transactional emails
+        tracking = TrackingSettings()
+        tracking.click_tracking  = ClickTracking(enable=False, enable_text=False)
+        tracking.open_tracking   = OpenTracking(enable=False)
+        message.tracking_settings = tracking
+
+        # List-Unsubscribe header — improves spam classification
+        message.add_header(Header(
+            "List-Unsubscribe",
+            f"<mailto:{EMAIL_FROM_ADDRESS}?subject=unsubscribe>"
+        ))
 
         try:
             response = sg.send(message)
