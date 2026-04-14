@@ -167,7 +167,7 @@ def _build_html_body(rep: dict, data: dict, week_label: str, ff_data: dict) -> s
     if IS_DEV:
         dev_banner = (
             f'<div class="dev-banner">'
-            f'&#9888; DEV TEST &#8212; Audit for: {rep["name"]} | '
+            f'NOTE: DEV TEST — Audit for: {rep["name"]} | '
             f'Prod email: {rep["email"]}'
             f'</div>'
         )
@@ -235,9 +235,9 @@ def _build_html_body(rep: dict, data: dict, week_label: str, ff_data: dict) -> s
         )
 
     if ff["status"] == "OK":
-        ff_html = f'<p class="ff-ok">&#10003; {ff["count"]} Fireflies transcript(s) recorded last week</p>'
+        ff_html = f'<p class="ff-ok">PASS: {ff["count"]} Fireflies transcript(s) recorded last week</p>'
     else:
-        ff_html = '<p class="ff-warn">&#9888; No Fireflies transcripts found. Ensure Fireflies is connected to your calendar.</p>'
+        ff_html = '<p class="ff-warn">NOTE: No Fireflies transcripts found. Ensure Fireflies is connected to your calendar.</p>'
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -246,7 +246,7 @@ def _build_html_body(rep: dict, data: dict, week_label: str, ff_data: dict) -> s
 <div class="wrapper">
   {dev_banner}
   <div class="header">
-    <h1>HubSpot Hygiene Audit &#8212; {rep['first_name']}</h1>
+    <h1>HubSpot Hygiene Audit — {rep['first_name']}</h1>
     <p>Week of {week_label} &nbsp;|&nbsp; {open_count} open deals</p>
   </div>
   <div class="body">
