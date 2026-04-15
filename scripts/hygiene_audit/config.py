@@ -120,7 +120,9 @@ STUCK_LEAD_STATUS_DAYS = 7    # L4 — days "Attempted to Contact" before escala
 PAST_DUE_MIN_DATE_STR  = "2025-01-01"   # D1 — ignore pre-2025 close dates
 
 # Lead statuses that are "stuck open" and need follow-up
-STUCK_LEAD_STATUSES = ["ATTEMPTED_TO_CONTACT", "IN_PROGRESS", "OPEN", "NEW"]
+# Contacts stuck in these statuses for 7+ days without activity are flagged (L4)
+# Deliberately excludes OPEN/NEW — those are legitimate unworked states, not stuck
+STUCK_LEAD_STATUSES = ["ATTEMPTED_TO_CONTACT", "IN_PROGRESS"]
 
 # -----------------------------------------------------------------------------
 # AI Analyst (OpenAI)

@@ -175,11 +175,14 @@ def get_calls_without_notes() -> list:
     Uses the engagements API via CRM object search for 'calls'.
     """
     print("  Fetching calls logged without notes...")
+    from datetime import datetime, timedelta, timezone as tz
+    cutoff_ms = str(int((datetime.now(tz=tz.utc) - timedelta(days=30)).timestamp() * 1000))
     payload = {
         "filterGroups": [{
             "filters": [
                 {"propertyName": "hubspot_owner_id", "operator": "IN",               "values": OWNER_IDS},
                 {"propertyName": "hs_body_preview",  "operator": "NOT_HAS_PROPERTY"},
+                {"propertyName": "hs_createdate",    "operator": "GTE",              "value":  cutoff_ms},
             ]
         }],
         "properties": [

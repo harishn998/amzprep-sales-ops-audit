@@ -141,24 +141,19 @@ Each deal has one or more hygiene issues flagged. Provide risk, reason, and acti
             response_format={"type": "json_object"},
         )
 
-        raw = response.choices[0].message.content.strip()
+        # GPT-4o json_object mode MUST return an object, never a bare array.
+        # The array is always wrapped but the key name varies: "analyses",
+        # "deals", "results", "output" etc. Find the first list value,
+        # whatever GPT-4o decided to call the wrapper key.
+        raw_json = json.loads(response.choices[0].message.content.strip())
+        if isinstance(raw_json, dict):
+            parsed = next((v for v in raw_json.values() if isinstance(v, list)), [])
+        elif isinstance(raw_json, list):
+            parsed = raw_json
+        else:
+            parsed = []
 
-        # GPT-4o with json_object mode returns a top-level object — unwrap if needed
-        parsed = json.loads(raw)
-        if isinstance(parsed, dict):
-            # May be wrapped: {"deals": [...]} or {"results": [...]} etc.
-            for key in ("deals", "results", "analysis", "data"):
-                if isinstance(parsed.get(key), list):
-                    parsed = parsed[key]
-                    break
-            else:
-                # Try to find the first list value
-                for v in parsed.values():
-                    if isinstance(v, list):
-                        parsed = v
-                        break
-
-        if not isinstance(parsed, list):
+        if not parsed:
             print(f"  [AI] Unexpected response format for {rep['name']}")
             return
 
