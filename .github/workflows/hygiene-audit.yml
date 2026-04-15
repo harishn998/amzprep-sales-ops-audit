@@ -2,36 +2,107 @@ name: HubSpot Hygiene Audit
 
 on:
   schedule:
-    # Every Monday at 9:00 AM ET (14:00 UTC)
+    # Monday 9:00 AM ET (14:00 UTC) — full weekly audit
     - cron: "0 14 * * 1"
+    # Friday 9:00 AM ET (14:00 UTC) — check-in reminder
+    - cron: "0 14 * * 5"
 
-  # Allow manual trigger from GitHub Actions UI for testing
+  # Manual trigger — choose mode in the UI
   workflow_dispatch:
+    inputs:
+      audit_mode:
+        description: "Audit mode"
+        required: false
+        default: "weekly"
+        type: choice
+        options:
+          - weekly
+          - reminder
 
 jobs:
-  run-audit:
-    name: Run weekly hygiene audit
+  # ── Monday: full weekly audit ──────────────────────────────────────────────
+  weekly-audit:
+    name: Weekly hygiene audit (Monday)
+    if: github.event_name == 'schedule' && github.event.schedule == '0 14 * * 1'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Run hygiene audit
+      - name: Run weekly audit
         working-directory: scripts/hygiene_audit
         env:
-          AUDIT_ENV:         dev            # ← change to 'production' to go live
-          HUBSPOT_TOKEN:      ${{ secrets.HUBSPOT_TOKEN }}
-          SLACK_BOT_TOKEN:    ${{ secrets.SLACK_BOT_TOKEN }}
-          FIREFLIES_API_KEY:  ${{ secrets.FIREFLIES_API_KEY }}
-          SENDGRID_API_KEY:   ${{ secrets.SENDGRID_API_KEY }}
+          AUDIT_ENV:         dev            # change to 'production' to go live
+          AUDIT_MODE:        weekly
+          HUBSPOT_TOKEN:     ${{ secrets.HUBSPOT_TOKEN }}
+          SLACK_BOT_TOKEN:   ${{ secrets.SLACK_BOT_TOKEN }}
+          FIREFLIES_API_KEY: ${{ secrets.FIREFLIES_API_KEY }}
+          SENDGRID_API_KEY:  ${{ secrets.SENDGRID_API_KEY }}
+          OPENAI_API_KEY:    ${{ secrets.OPENAI_API_KEY }}
+        run: python audit.py
+
+  # ── Friday: lighter check-in reminder ─────────────────────────────────────
+  friday-reminder:
+    name: Friday check-in reminder
+    if: github.event_name == 'schedule' && github.event.schedule == '0 14 * * 5'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run Friday reminder
+        working-directory: scripts/hygiene_audit
+        env:
+          AUDIT_ENV:         dev            # change to 'production' to go live
+          AUDIT_MODE:        reminder
+          HUBSPOT_TOKEN:     ${{ secrets.HUBSPOT_TOKEN }}
+          SLACK_BOT_TOKEN:   ${{ secrets.SLACK_BOT_TOKEN }}
+          FIREFLIES_API_KEY: ${{ secrets.FIREFLIES_API_KEY }}
+          SENDGRID_API_KEY:  ${{ secrets.SENDGRID_API_KEY }}
+          OPENAI_API_KEY:    ${{ secrets.OPENAI_API_KEY }}
+        run: python audit.py
+
+  # ── Manual trigger ─────────────────────────────────────────────────────────
+  manual-run:
+    name: Manual audit run
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run audit
+        working-directory: scripts/hygiene_audit
+        env:
+          AUDIT_ENV:         dev
+          AUDIT_MODE:        ${{ github.event.inputs.audit_mode || 'weekly' }}
+          HUBSPOT_TOKEN:     ${{ secrets.HUBSPOT_TOKEN }}
+          SLACK_BOT_TOKEN:   ${{ secrets.SLACK_BOT_TOKEN }}
+          FIREFLIES_API_KEY: ${{ secrets.FIREFLIES_API_KEY }}
+          SENDGRID_API_KEY:  ${{ secrets.SENDGRID_API_KEY }}
+          OPENAI_API_KEY:    ${{ secrets.OPENAI_API_KEY }}
         run: python audit.py
