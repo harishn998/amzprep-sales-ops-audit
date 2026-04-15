@@ -6,7 +6,7 @@
 # Results are injected back into the deal dicts before Slack/email formatting.
 #
 # Graceful degradation: if OPENAI_API_KEY is missing or the API fails,
-# the audit continues normally — AI fields remain None and are hidden in output.
+# the audit continues normally — AI fields remain None and are hidden.
 # =============================================================================
 
 import os
@@ -32,62 +32,103 @@ def _get_client() -> OpenAI | None:
 def _build_deal_context(deal: dict) -> str:
     """Format a single deal's context into a compact human-readable block."""
     ctx = deal.get("ai_context", {})
+    flags = []
+    if deal.get("is_past_due"):                        flags.append("past-due close date")
+    if deal.get("is_stale"):                           flags.append("stale (no CRM activity)")
+    if deal.get("no_recent_contact"):                  flags.append("no contact logged in 14+ days")
+    if deal.get("missing_amount"):                     flags.append("missing deal amount")
+    if deal.get("missing_source"):                     flags.append("missing pipeline source")
+    if deal.get("missing_mrr"):                        flags.append("missing MRR")
+    if deal.get("missing_status"):                     flags.append("missing deal status")
+    if deal.get("created_from_email_no_followup"):     flags.append("email-sourced, no follow-up contact")
+
     lines = [
-        f"Deal: {deal['name']}",
-        f"Days inactive (no CRM activity): {ctx.get('days_inactive') or 'never active'}",
+        f"Deal name: {deal['name']}",
+        f"Days since CRM activity: {ctx.get('days_inactive') or 'never active'}",
         f"Days since last contact (call/email): {ctx.get('days_since_contact') or 'never contacted'}",
-        f"Close date: {ctx.get('close_date') or 'not set'} {'(PAST DUE)' if ctx.get('is_past_due') else ''}",
+        f"Close date: {ctx.get('close_date') or 'not set'}{' (PAST DUE)' if ctx.get('is_past_due') else ''}",
         f"Deal amount: ${ctx.get('amount') or '0'}",
         f"MRR: ${ctx.get('mrr') or '0'}",
-        f"Pipeline source: {ctx.get('pipeline_source')}",
-        f"Deal status: {ctx.get('deal_status')}",
-        f"Analytics source: {ctx.get('analytics_source')}",
+        f"Pipeline source: {ctx.get('pipeline_source') or 'unknown'}",
+        f"Deal status field: {ctx.get('deal_status') or 'empty'}",
         f"Deal age: {ctx.get('deal_age_days') or 'unknown'} days",
+        f"Hygiene flags: {', '.join(flags) if flags else 'none'}",
     ]
-
-    # Flag which hygiene issues this deal triggered
-    flags = []
-    if deal.get("is_past_due"):              flags.append("past-due close date")
-    if deal.get("is_stale"):                 flags.append("stale (no CRM activity)")
-    if deal.get("no_recent_contact"):        flags.append("no contact logged in 14+ days")
-    if deal.get("missing_amount"):           flags.append("missing deal amount")
-    if deal.get("missing_source"):           flags.append("missing pipeline source")
-    if deal.get("missing_mrr"):              flags.append("missing MRR")
-    if deal.get("missing_status"):           flags.append("missing deal status")
-    if deal.get("created_from_email_no_followup"): flags.append("came from email — no follow-up contact logged")
-
-    if flags:
-        lines.append(f"Hygiene flags: {', '.join(flags)}")
-
     return "\n".join(lines)
 
 
+# The system prompt tells GPT exactly what key to use — eliminates wrapper ambiguity
 SYSTEM_PROMPT = """You are a sales operations analyst for AMZ Prep, a 3PL fulfillment company.
-You receive HubSpot deal data for sales reps and assess deal health.
+Analyse the HubSpot deals provided and assess health for the sales rep.
 
-For each deal provided, respond with a JSON array where each element has exactly:
-{
-  "deal_name": "<exact deal name as given>",
-  "risk": "<High | Medium | Low>",
-  "reason": "<1 concise sentence explaining the core problem>",
-  "action": "<1 specific, actionable next step for the rep this week>"
-}
+Respond with a JSON object in EXACTLY this format — no other keys, no markdown, no preamble:
+{"deals": [
+  {"deal_name": "<exact deal name>", "risk": "<High|Medium|Low>", "reason": "<1 sentence>", "action": "<1 specific step>"},
+  ...
+]}
 
-Rules:
-- Risk is High if: past-due AND stale AND no contact, or no contact ever, or deal age > 90 days with no activity
-- Risk is Medium if: one major issue present (stale OR past-due OR missing fields)
-- Risk is Low if: minor hygiene issues only (missing fields, recently active)
-- Reason must be specific to this deal's data — never generic
-- Action must be concrete: who to call, what to send, whether to close-lost
-- Never use placeholder phrases like "review the deal" — be directive
-- Respond ONLY with the JSON array, no preamble, no markdown fences"""
+Risk rules:
+- High: past-due AND never contacted, OR no contact ever, OR 90+ days inactive
+- Medium: one major issue (stale OR past-due OR missing critical fields)
+- Low: minor hygiene issues only (missing fields, recently active)
+
+Reason: specific to this deal's data — never generic
+Action: concrete directive — who to call, what email to send, whether to close-lost
+Never say "review the deal" — be specific and directive."""
+
+
+def _parse_gpt_response(raw: str, rep_name: str) -> list:
+    """
+    Bulletproof parser that handles all GPT-4o response formats.
+    Checks for the exact key we requested first, then falls back
+    to breadth-first search for any list of deal dicts.
+    Logs the raw response on failure so we can debug.
+    """
+    try:
+        # Strip any accidental markdown code fences
+        cleaned = raw.strip()
+        if cleaned.startswith("```"):
+            cleaned = "\n".join(cleaned.split("\n")[1:])
+            if cleaned.endswith("```"):
+                cleaned = cleaned[:-3].strip()
+
+        parsed = json.loads(cleaned)
+
+        # Best case: GPT followed our exact format {"deals": [...]}
+        if isinstance(parsed, dict) and isinstance(parsed.get("deals"), list):
+            return parsed["deals"]
+
+        # It's already a bare array
+        if isinstance(parsed, list):
+            return parsed
+
+        # GPT used a different wrapper key — find any list of dicts with deal_name
+        if isinstance(parsed, dict):
+            for v in parsed.values():
+                if isinstance(v, list) and v and isinstance(v[0], dict) and "deal_name" in v[0]:
+                    return v
+            # Recurse one level deeper (nested wrapping)
+            for v in parsed.values():
+                if isinstance(v, dict):
+                    for vv in v.values():
+                        if isinstance(vv, list) and vv and isinstance(vv[0], dict):
+                            return vv
+
+        # Nothing worked — log the raw response so we can see what GPT returned
+        print(f"  [AI] Could not extract deal list for {rep_name}.")
+        print(f"  [AI] Raw response (first 300 chars): {raw[:300]}")
+        return []
+
+    except json.JSONDecodeError as e:
+        print(f"  [AI] JSON parse error for {rep_name}: {e}")
+        print(f"  [AI] Raw response (first 300 chars): {raw[:300]}")
+        return []
 
 
 def analyse_rep_deals(rep: dict, results: dict) -> None:
     """
-    Analyses the top N most concerning deals for a rep using GPT-4o.
-    Injects ai_risk, ai_reason, ai_action fields directly into each deal dict.
-    Modifies results in-place. Returns nothing.
+    Analyse top N most concerning deals for a rep using GPT-4o.
+    Injects ai_risk, ai_reason, ai_action into each deal dict in-place.
     """
     if not AI_ENABLED:
         return
@@ -96,13 +137,12 @@ def analyse_rep_deals(rep: dict, results: dict) -> None:
     if client is None:
         return
 
-    oid = rep["owner_id"]
+    oid  = rep["owner_id"]
     data = results.get(oid, {})
 
-    # Collect the most concerning deals — prioritised by severity
-    # Past-due + stale are highest priority, then no_recent_contact, then stale only
+    # Collect deals by priority: past_due first, then no_contact, then stale
     priority_deals = []
-    seen_ids = set()
+    seen_ids       = set()
 
     def _add(bucket_key: str):
         for d in data.get(bucket_key, []):
@@ -118,16 +158,15 @@ def analyse_rep_deals(rep: dict, results: dict) -> None:
     if not priority_deals:
         return
 
-    # Build the prompt
     deal_blocks = "\n\n".join(
         f"--- Deal {i+1} ---\n{_build_deal_context(d)}"
         for i, d in enumerate(priority_deals)
     )
 
-    user_prompt = f"""Analyse these {len(priority_deals)} deals for {rep['name']} at AMZ Prep.
-Each deal has one or more hygiene issues flagged. Provide risk, reason, and action for each.
-
-{deal_blocks}"""
+    user_prompt = (
+        f"Analyse these {len(priority_deals)} deals for {rep['name']} at AMZ Prep.\n\n"
+        f"{deal_blocks}"
+    )
 
     try:
         response = client.chat.completions.create(
@@ -136,56 +175,45 @@ Each deal has one or more hygiene issues flagged. Provide risk, reason, and acti
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user",   "content": user_prompt},
             ],
-            temperature=0.3,        # Low temp for consistent structured output
-            max_tokens=1500,
+            temperature=0.2,
+            max_tokens=2000,
             response_format={"type": "json_object"},
         )
 
-        # GPT-4o json_object mode MUST return an object, never a bare array.
-        # The array is always wrapped but the key name varies: "analyses",
-        # "deals", "results", "output" etc. Find the first list value,
-        # whatever GPT-4o decided to call the wrapper key.
-        raw_json = json.loads(response.choices[0].message.content.strip())
-        if isinstance(raw_json, dict):
-            parsed = next((v for v in raw_json.values() if isinstance(v, list)), [])
-        elif isinstance(raw_json, list):
-            parsed = raw_json
-        else:
-            parsed = []
+        raw    = response.choices[0].message.content or ""
+        parsed = _parse_gpt_response(raw, rep["name"])
 
         if not parsed:
-            print(f"  [AI] Unexpected response format for {rep['name']}")
             return
 
-        # Map results back to deal dicts by deal name
+        # Map results back to deal dicts by exact deal name
         name_to_result = {item.get("deal_name", ""): item for item in parsed}
 
+        matched = 0
         for deal in priority_deals:
-            match = name_to_result.get(deal["name"])
-            if match:
-                deal["ai_risk"]   = match.get("risk")
-                deal["ai_reason"] = match.get("reason")
-                deal["ai_action"] = match.get("action")
+            result = name_to_result.get(deal["name"])
+            if result:
+                deal["ai_risk"]   = result.get("risk")
+                deal["ai_reason"] = result.get("reason")
+                deal["ai_action"] = result.get("action")
+                matched += 1
 
         risk_counts = {"High": 0, "Medium": 0, "Low": 0}
         for deal in priority_deals:
             if deal.get("ai_risk") in risk_counts:
                 risk_counts[deal["ai_risk"]] += 1
-        print(f"  {rep['name']}: {len(priority_deals)} deals analysed — "
-              f"High={risk_counts['High']} Med={risk_counts['Medium']} Low={risk_counts['Low']}")
 
-    except json.JSONDecodeError as e:
-        print(f"  [AI] JSON parse error for {rep['name']}: {e}")
+        print(
+            f"  {rep['name']}: {len(priority_deals)} deals sent, {matched} matched — "
+            f"High={risk_counts['High']} Med={risk_counts['Medium']} Low={risk_counts['Low']}"
+        )
+
     except Exception as e:
         print(f"  [AI] API error for {rep['name']}: {e}")
 
 
 def run_ai_analysis(results: dict) -> None:
-    """
-    Entry point from audit.py.
-    Runs AI analysis for all reps sequentially with a small delay
-    to avoid OpenAI rate limits.
-    """
+    """Entry point from audit.py. Runs AI analysis for all reps."""
     client = _get_client()
     if client is None:
         print("\n[AI] No OPENAI_API_KEY — skipping AI analysis.")
@@ -199,4 +227,4 @@ def run_ai_analysis(results: dict) -> None:
             analyse_rep_deals(rep, results)
         except Exception as e:
             print(f"  [AI] Failed for {rep['name']}: {e}")
-        time.sleep(0.5)   # Respect OpenAI rate limits between reps
+        time.sleep(0.5)

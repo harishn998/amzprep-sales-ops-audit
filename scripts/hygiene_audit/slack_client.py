@@ -1,6 +1,7 @@
 # =============================================================================
 # slack_client.py — Slack notifications
 # Format: all deal lists use clean aligned table rows with dot separators
+# Stuck lead status capped at 50 in display — real number shown in header
 # =============================================================================
 
 import os
@@ -69,15 +70,13 @@ def _week_label() -> str:
 # -----------------------------------------------------------------------------
 
 def _risk_tag(deal: dict) -> str:
-    """Short risk tag for inline use. Empty string if no AI data."""
     risk = deal.get("ai_risk")
     if not risk:
         return ""
-    return {"High": "  [HIGH]", "Medium": "  [MED]", "Low": "  [LOW]"}.get(risk, "")
+    return {"High": "  *[HIGH]*", "Medium": "  *[MED]*", "Low": "  *[LOW]*"}.get(risk, "")
 
 
 def _ai_lines(deal: dict) -> list:
-    """Returns 1–2 indented AI insight lines, or empty list if no AI data."""
     reason = deal.get("ai_reason")
     action = deal.get("ai_action")
     if not reason:
@@ -89,30 +88,28 @@ def _ai_lines(deal: dict) -> list:
 
 
 def _deal_row(i: int, deal: dict, meta: str) -> list:
-    """
-    Formats one deal as a clean aligned row + optional AI insight lines.
-    meta = the right-hand info (due date, days inactive, etc.)
-
-    Output (example):
-      1. Deal Name                     ·  due Mar 15, 2025  [HIGH]
-         Reason: No contact in 60 days.
-         Action: Send break-up email.
-    """
-    name_link = f"<{deal['url']}|{deal['name']}>"
-    risk      = _risk_tag(deal)
-    row       = f"  {i:>2}. {name_link}  ·  {meta}{risk}"
+    """One deal row: numbered link · meta  [RISK] + optional AI lines."""
+    row = f"  {i:>2}. <{deal['url']}|{deal['name']}>  ·  {meta}{_risk_tag(deal)}"
     return [row] + _ai_lines(deal)
 
 
 def _contact_row(i: int, c: dict, meta: str = "") -> str:
-    link = f"<{c['url']}|{c['name']}>"
     suffix = f"  ·  {meta}" if meta else ""
-    return f"  {i:>2}. {link}{suffix}"
+    return f"  {i:>2}. <{c['url']}|{c['name']}>{suffix}"
 
 
-def _overflow(total: int, shown: int) -> str:
+def _section_header(title: str) -> list:
+    """Bold section title with a thin divider line beneath it."""
+    return [
+        "",
+        f"*{title}*",
+        "─" * min(len(title) + 4, 44),
+    ]
+
+
+def _overflow(total: int, shown: int, noun: str = "more") -> str:
     if total > shown:
-        return f"  _...and {total - shown} more — open HubSpot to see all_"
+        return f"  _...and {total - shown} {noun} — open HubSpot to view all_"
     return ""
 
 
@@ -121,7 +118,8 @@ def _overflow(total: int, shown: int) -> str:
 # -----------------------------------------------------------------------------
 
 def _format_scorecard(scorecard_rows: list, week_label: str) -> str:
-    prefix      = message_prefix()
+    prefix = message_prefix()
+
     total_deals = sum(r["open_deals"]          for r in scorecard_rows)
     total_pd    = sum(r["past_due"]            for r in scorecard_rows)
     total_stale = sum(r["stale"]               for r in scorecard_rows)
@@ -142,7 +140,7 @@ def _format_scorecard(scorecard_rows: list, week_label: str) -> str:
     if IS_DEV:
         lines.append("_DEV MODE — real data, dev recipients only_")
 
-    # ── Deal issue scorecard ──────────────────────────────────────────────────
+    # Deal issues table
     lines += [
         "",
         "*Deal Issues*",
@@ -164,32 +162,34 @@ def _format_scorecard(scorecard_rows: list, week_label: str) -> str:
         "```",
     ]
 
-    # ── Contact issue scorecard ───────────────────────────────────────────────
+    # Contact + activity issues table
     lines += [
         "",
         "*Contact & Activity Issues*",
         "```",
-        f"{'Rep':<12} {'NoLead':>7} {'Stuck7d':>8} {'CallsNoNote':>12} {'EmailNoFU':>10}",
-        "─" * 52,
+        f"{'Rep':<12} {'NoLead':>7} {'Stuck':>6} {'CallsNotes':>11} {'EmailFU':>8}",
+        "─" * 48,
     ]
     for r in scorecard_rows:
         first = r["name"].split()[0]
         lines.append(
-            f"{first:<12} {r['missing_lead_status']:>7} {r['stuck_lead_status']:>8} "
-            f"{r['calls_without_notes']:>12} {r['email_no_followup']:>10}"
+            f"{first:<12} {r['missing_lead_status']:>7} {r['stuck_lead_status']:>6} "
+            f"{r['calls_without_notes']:>11} {r['email_no_followup']:>8}"
         )
     lines += [
-        "─" * 52,
-        f"{'TOTAL':<12} {total_lead:>7} {total_stuck:>8} {total_cnotes:>12} {total_email:>10}",
+        "─" * 48,
+        f"{'TOTAL':<12} {total_lead:>7} {total_stuck:>6} {total_cnotes:>11} {total_email:>8}",
         "```",
+        "_Note: Stuck = contacts in Attempted to Contact or In Progress 7+ days_",
     ]
 
-    # ── Fireflies ─────────────────────────────────────────────────────────────
+    # Fireflies
     lines += ["", "*Fireflies — Previous Week*", "```"]
     for r in scorecard_rows:
         status = "OK" if r["ff_status"] == "OK" else "NO CALLS RECORDED"
         lines.append(f"  {r['name'].split()[0]:<12}  {r['ff_count']:>2} transcript(s)   {status}")
     lines += ["```", "", "_Per-rep audit DMs sent below._"]
+
     return "\n".join(lines)
 
 
@@ -209,9 +209,11 @@ def _format_rep_message(rep: dict, data: dict, week_label: str, ff_data: dict) -
         "missing_amount", "missing_source", "missing_mrr", "missing_status",
     ])
     contact_issue_total = sum(len(data[k]) for k in [
-        "missing_lead_status", "stuck_lead_status", "calls_without_notes",
+        "missing_lead_status", "calls_without_notes",
     ])
-    grand_total = deal_issue_total + contact_issue_total
+    # Stuck lead capped separately — can be very large, report count but don't inflate total
+    stuck_count = len(data.get("stuck_lead_status", []))
+    grand_total = deal_issue_total + contact_issue_total + stuck_count
 
     lines = [
         f"{prefix}*HubSpot Pipeline Hygiene Audit — {rep['name']}*",
@@ -239,7 +241,7 @@ def _format_rep_message(rep: dict, data: dict, week_label: str, ff_data: dict) -
         f"{'Deal issues total':<32} {deal_issue_total:>5}",
         "",
         f"{'Missing lead status':<32} {len(data['missing_lead_status']):>5}",
-        f"{'Stuck lead status (7d+)':<32} {len(data['stuck_lead_status']):>5}",
+        f"{'Stuck in open status (7d+)':<32} {stuck_count:>5}",
         f"{'Calls with no notes (30d)':<32} {len(data['calls_without_notes']):>5}",
         "─" * 39,
         f"{'TOTAL ISSUES':<32} {grand_total:>5}",
@@ -249,7 +251,7 @@ def _format_rep_message(rep: dict, data: dict, week_label: str, ff_data: dict) -
     # ── Past-due deals ────────────────────────────────────────────────────────
     pd = data["past_due"]
     if pd:
-        lines += ["", f"*Past-Due Deals — {len(pd)} total, oldest first*"]
+        lines += _section_header(f"Past-Due Deals — {len(pd)} total, oldest first")
         for i, d in enumerate(pd[:MAX_DEALS_SHOWN], 1):
             date_str = d["close_date_str"] or "no close date"
             lines += _deal_row(i, d, f"due {date_str}")
@@ -258,7 +260,7 @@ def _format_rep_message(rep: dict, data: dict, week_label: str, ff_data: dict) -
     # ── No recent contact ─────────────────────────────────────────────────────
     nc = data["no_recent_contact"]
     if nc:
-        lines += ["", f"*No Contact Logged in 14+ Days — {len(nc)} total*"]
+        lines += _section_header(f"No Contact Logged in 14+ Days — {len(nc)} total")
         for i, d in enumerate(nc[:MAX_DEALS_SHOWN], 1):
             meta = (
                 "never contacted"
@@ -271,7 +273,7 @@ def _format_rep_message(rep: dict, data: dict, week_label: str, ff_data: dict) -
     # ── Stale deals ───────────────────────────────────────────────────────────
     st = data["stale"]
     if st:
-        lines += ["", f"*Stale Deals — No CRM Activity — {len(st)} total*"]
+        lines += _section_header(f"Stale Deals — No CRM Activity — {len(st)} total")
         for i, d in enumerate(st[:MAX_DEALS_SHOWN], 1):
             meta = (
                 "no activity ever"
@@ -284,34 +286,34 @@ def _format_rep_message(rep: dict, data: dict, week_label: str, ff_data: dict) -
     # ── Email-sourced, no follow-up ───────────────────────────────────────────
     ef = data["created_from_email_no_followup"]
     if ef:
-        lines += ["", f"*Email-Sourced Deals — No Follow-Up Logged — {len(ef)} total*"]
+        lines += _section_header(f"Email-Sourced Deals — No Follow-Up — {len(ef)} total")
         for i, d in enumerate(ef[:MAX_DEALS_SHOWN], 1):
             lines += _deal_row(i, d, "email source  ·  no contact ever logged")
         lines.append(_overflow(len(ef), MAX_DEALS_SHOWN))
 
     # ── Stuck lead status (L4) ────────────────────────────────────────────────
-    sk = data["stuck_lead_status"]
+    sk = data.get("stuck_lead_status", [])
     if sk:
-        lines += ["", f"*Contacts Stuck in Lead Status 7+ Days — {len(sk)} total*"]
-        lines.append("_Contacts in 'Attempted to Contact' or 'In Progress' with no update_")
+        lines += _section_header(f"Contacts Stuck in Lead Status — {len(sk)} total")
+        lines.append("_Attempted to Contact or In Progress with no update in 7+ days_")
         for i, c in enumerate(sk[:MAX_CONTACTS_SHOWN], 1):
-            days_str = f"{c['days_stuck']}d" if c["days_stuck"] is not None else "unknown"
-            status   = c.get("lead_status", "unknown").replace("_", " ").title()
+            days_str = f"{c['days_stuck']}d" if c.get("days_stuck") is not None else "unknown"
+            status   = (c.get("lead_status") or "").replace("_", " ").title()
             lines.append(_contact_row(i, c, f"{status}  ·  {days_str} stuck"))
         lines.append(_overflow(len(sk), MAX_CONTACTS_SHOWN))
 
     # ── Missing lead status (L1) ──────────────────────────────────────────────
     ml = data["missing_lead_status"]
     if ml:
-        lines += ["", f"*Contacts Missing Lead Status — {len(ml)} total*"]
+        lines += _section_header(f"Contacts Missing Lead Status — {len(ml)} total")
         for i, c in enumerate(ml[:MAX_CONTACTS_SHOWN], 1):
             lines.append(_contact_row(i, c))
         lines.append(_overflow(len(ml), MAX_CONTACTS_SHOWN))
 
     # ── Calls without notes (E2) ──────────────────────────────────────────────
-    cn = data["calls_without_notes"]
+    cn = data.get("calls_without_notes", [])
     if cn:
-        lines += ["", f"*Calls Logged With No Notes — {len(cn)} in last 30 days*"]
+        lines += _section_header(f"Calls Logged With No Notes — {len(cn)} in last 30 days")
         for i, c in enumerate(cn[:MAX_CONTACTS_SHOWN], 1):
             lines.append(f"  {i:>2}. {c['title']}")
         lines.append(_overflow(len(cn), MAX_CONTACTS_SHOWN))
@@ -320,9 +322,9 @@ def _format_rep_message(rep: dict, data: dict, week_label: str, ff_data: dict) -
     ff_str = (
         f"{ff['count']} transcript(s) recorded — OK"
         if ff["status"] == "OK"
-        else "No transcripts recorded — check Fireflies is connected to calendar"
+        else "No transcripts recorded — check Fireflies is connected to your calendar"
     )
-    lines += ["", f"*Fireflies — Previous Week*", f"  {ff_str}"]
+    lines += ["", "*Fireflies — Previous Week*", f"  {ff_str}"]
 
     # ── Action items ──────────────────────────────────────────────────────────
     lines += [
@@ -331,7 +333,7 @@ def _format_rep_message(rep: dict, data: dict, week_label: str, ff_data: dict) -
         "  1. Update or close-lost any deals with past-due close dates",
         "  2. Log a call, email, or note on every deal with no recent contact",
         "  3. Fill in Deal Amount, Pipeline Source, MRR, and Deal Status",
-        "  4. For email-sourced deals — log first call or email engagement in HubSpot",
+        "  4. Email-sourced deals — log first call or email engagement in HubSpot",
         "  5. Advance or close contacts stuck in Attempted to Contact / In Progress",
         "  6. Add outcome notes to any calls logged without them",
         "  7. Assign Lead Status to contacts without one",
@@ -339,8 +341,7 @@ def _format_rep_message(rep: dict, data: dict, week_label: str, ff_data: dict) -
         "_All unresolved issues carry forward every week until fixed._",
     ]
 
-    # Remove any empty overflow lines
-    return "\n".join(l for l in lines if l is not None and l != "")
+    return "\n".join(line for line in lines if line is not None)
 
 
 # -----------------------------------------------------------------------------
@@ -349,26 +350,26 @@ def _format_rep_message(rep: dict, data: dict, week_label: str, ff_data: dict) -
 
 def _format_friday_reminder(rep: dict, data: dict, ff_data: dict) -> str:
     prefix = message_prefix()
-    oid    = rep["owner_id"]
 
     critical_deals    = (data["past_due"] + data["no_recent_contact"])[:8]
-    critical_contacts = (data["stuck_lead_status"] + data["missing_lead_status"])[:5]
+    critical_contacts = (data.get("stuck_lead_status", []) + data["missing_lead_status"])[:5]
 
     lines = [
         f"{prefix}*Friday Hygiene Check-In — {rep['name']}*",
-        f"Sent by <@{ARI['slack_id']}>  ·  A reminder on open issues from Monday's audit",
+        f"Sent by <@{ARI['slack_id']}>  ·  Reminder on open issues from Monday's audit",
         "",
     ]
 
     if not critical_deals and not critical_contacts:
         lines += [
             "No critical open issues — great work this week.",
-            "_Monday's full audit will recap the full pipeline state._",
+            "_Monday's full audit will recap the pipeline state._",
         ]
         return "\n".join(lines)
 
+    total_critical = len(data["past_due"]) + len(data["no_recent_contact"])
     if critical_deals:
-        lines.append(f"*{len(data['past_due']) + len(data['no_recent_contact'])} deals still need attention:*")
+        lines += _section_header(f"{total_critical} Deals Still Need Attention")
         for i, d in enumerate(critical_deals, 1):
             if d.get("is_past_due"):
                 meta = f"past due {d['close_date_str']}"
@@ -380,10 +381,11 @@ def _format_friday_reminder(rep: dict, data: dict, ff_data: dict) -> str:
         lines.append("")
 
     if critical_contacts:
-        lines.append(f"*{len(data['stuck_lead_status']) + len(data['missing_lead_status'])} contacts need lead status update:*")
+        total_c = len(data.get("stuck_lead_status", [])) + len(data["missing_lead_status"])
+        lines += _section_header(f"{total_c} Contacts Need Lead Status Update")
         for i, c in enumerate(critical_contacts, 1):
-            status = c.get("lead_status") or "no status set"
-            lines.append(_contact_row(i, c, status.replace("_", " ").title()))
+            status = (c.get("lead_status") or "no status").replace("_", " ").title()
+            lines.append(_contact_row(i, c, status))
         lines.append("")
 
     lines.append("_Update these before end of day Friday._")
