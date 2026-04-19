@@ -1,5 +1,5 @@
 # =============================================================================
-# config.py — AMZ Prep Hygiene Audit
+# config.py — AMZ Prep Hygiene Audit + SLA Checker
 # =============================================================================
 #
 # ENVIRONMENT SWITCH
@@ -11,6 +11,7 @@
 # ----------
 #   AUDIT_MODE=weekly      → Monday full audit (default)
 #   AUDIT_MODE=reminder    → Friday lighter check-in on unresolved issues
+#   AUDIT_MODE=sla         → Daily SLA breach check (weekdays 8 AM ET)
 #
 # =============================================================================
 
@@ -23,6 +24,7 @@ AUDIT_ENV  = os.environ.get("AUDIT_ENV",  "dev").lower().strip()
 AUDIT_MODE = os.environ.get("AUDIT_MODE", "weekly").lower().strip()
 IS_DEV     = AUDIT_ENV  != "production"
 IS_FRIDAY  = AUDIT_MODE == "reminder"
+IS_SLA     = AUDIT_MODE == "sla"
 
 HUBSPOT_PORTAL_ID = "878268"
 
@@ -48,16 +50,14 @@ DEV_SLACK_IDS = [
     DEV_ARI["slack_id"],         # U06CP1PJN3Y
 ]
 DEV_EMAIL_CC = [
-    DEV_HARISHNATH["email"],     # harishnath@amzprep.com
-    DEV_JERUN["email"],          # jerun@amzprep.com
-    DEV_ARI["email"],            # ari@amzprep.com
+    DEV_HARISHNATH["email"],
+    DEV_JERUN["email"],
+    DEV_ARI["email"],
 ]
 DEV_EMAIL_TO = DEV_HARISHNATH["email"]
 
 # -----------------------------------------------------------------------------
 # Production reps
-# HubSpot queries use these owner IDs in BOTH modes — real data always.
-# Slack/email routing is overridden in dev mode — AEs never receive anything.
 # -----------------------------------------------------------------------------
 PRODUCTION_REPS = [
     {
@@ -95,6 +95,7 @@ PRODUCTION_REPS = [
 REPS            = PRODUCTION_REPS
 OWNER_ID_TO_REP = {r["owner_id"]: r for r in REPS}
 OWNER_IDS       = [r["owner_id"] for r in REPS]
+EMAIL_TO_REP    = {r["email"]: r for r in REPS}
 
 # -----------------------------------------------------------------------------
 # Stakeholders — production
@@ -112,24 +113,57 @@ PRODUCTION_EMAIL_CC = [
 EMAIL_CC = DEV_EMAIL_CC if IS_DEV else PRODUCTION_EMAIL_CC
 
 # -----------------------------------------------------------------------------
-# Hygiene thresholds
+# Existing hygiene thresholds (unchanged)
 # -----------------------------------------------------------------------------
-STALE_DAYS             = 14   # D2 — days with no activity before flagging stale
-ENGAGEMENT_STALE_DAYS  = 14   # E1 — days since last contact (call/email) before flagging
-STUCK_LEAD_STATUS_DAYS = 7    # L4 — days "Attempted to Contact" before escalating
-PAST_DUE_MIN_DATE_STR  = "2025-01-01"   # D1 — ignore pre-2025 close dates
-
-# Lead statuses that are "stuck open" and need follow-up
-# Contacts stuck in these statuses for 7+ days without activity are flagged (L4)
-# Deliberately excludes OPEN/NEW — those are legitimate unworked states, not stuck
-STUCK_LEAD_STATUSES = ["ATTEMPTED_TO_CONTACT", "IN_PROGRESS"]
+STALE_DAYS             = 14
+ENGAGEMENT_STALE_DAYS  = 14
+STUCK_LEAD_STATUS_DAYS = 7
+PAST_DUE_MIN_DATE_STR  = "2025-01-01"
+STUCK_LEAD_STATUSES    = ["ATTEMPTED_TO_CONTACT", "IN_PROGRESS"]
 
 # -----------------------------------------------------------------------------
-# AI Analyst (OpenAI)
+# NEW — SLA thresholds
+# -----------------------------------------------------------------------------
+# Lead SLA: rep must respond within 30 mins of lead submission (working hours)
+LEAD_SLA_MINUTES        = 30
+
+# Deal SLA severity tiers (days with no activity on open deal)
+DEAL_SLA_WARNING_DAYS   = 7    # Flag in weekly report as warning
+DEAL_SLA_BREACH_DAYS    = 14   # Flag as SLA breach + immediate notification
+
+# Working hours for SLA calculation (Eastern Time)
+SLA_WORK_START          = (9, 30)   # 9:30 AM ET
+SLA_WORK_END            = (18, 30)  # 6:30 PM ET
+SLA_TIMEZONE            = "America/New_York"
+
+# How far back to look for new leads in daily SLA check (hours)
+SLA_LOOKBACK_HOURS      = 48   # 48h covers any missed leads + weekend gap
+
+# Valid values for the Pipeline Source (lead_source___amz_prep) contact property.
+# These must match the exact dropdown option values in HubSpot.
+# If HubSpot adds/changes options, update this list to match.
+VALID_PIPELINE_SOURCES = [
+    "Direct",
+    "Referral",
+    "Agency/Partner",
+    "Inbound - Website",
+    "Inbound - Social",
+    "Outbound - Cold Email",
+    "Outbound - Cold Call",
+    "Conference/Event",
+    "Re-engagement",
+    "Other",
+]
+
+# Pipeline source value that triggers the referral partner name requirement
+REFERRAL_SOURCE_VALUE = "Referral"
+
+# -----------------------------------------------------------------------------
+# AI Analyst (OpenAI) — unchanged
 # -----------------------------------------------------------------------------
 OPENAI_MODEL         = "gpt-4o"
-AI_MAX_DEALS_PER_REP = 10    # max deals sent to AI per rep (cost control)
-AI_ENABLED           = True  # set False to skip AI without changing code
+AI_MAX_DEALS_PER_REP = 10
+AI_ENABLED           = True
 
 # -----------------------------------------------------------------------------
 # Notification routing helpers
@@ -144,8 +178,20 @@ def resolve_slack_ids_for_scorecard() -> list:
         return DEV_SLACK_IDS
     return [PRODUCTION_ARI["slack_id"]]
 
+def resolve_slack_ids_for_sla_breach(rep: dict) -> list:
+    """SLA breach alerts: rep + Ari. Dev: dev team only."""
+    if IS_DEV:
+        return DEV_SLACK_IDS
+    return [rep["slack_id"], PRODUCTION_ARI["slack_id"]]
+
 def resolve_email(rep: dict) -> str:
     return DEV_EMAIL_TO if IS_DEV else rep["email"]
+
+def resolve_sla_breach_email_cc(to_email: str) -> list:
+    """CC list for immediate SLA breach emails."""
+    if IS_DEV:
+        return [e for e in DEV_EMAIL_CC if e.lower() != to_email.lower()]
+    return [e for e in PRODUCTION_EMAIL_CC if e.lower() != to_email.lower()]
 
 def message_prefix() -> str:
     prefix = ""
@@ -153,13 +199,15 @@ def message_prefix() -> str:
         prefix += "[DEV TEST] "
     if IS_FRIDAY:
         prefix += "[FRIDAY CHECK-IN] "
+    if IS_SLA:
+        prefix += "[SLA ALERT] "
     return prefix
 
 # -----------------------------------------------------------------------------
 # Email sending
 # -----------------------------------------------------------------------------
 EMAIL_FROM_ADDRESS = "harishnath@amzprep.com"
-EMAIL_FROM_NAME    = "AMZ Prep Hygiene Audit"
+EMAIL_FROM_NAME    = "Kiro — AMZ Prep Sales Ops"
 
 # -----------------------------------------------------------------------------
 # HubSpot
@@ -167,32 +215,19 @@ EMAIL_FROM_NAME    = "AMZ Prep Hygiene Audit"
 HUBSPOT_BASE_URL = "https://api.hubapi.com"
 
 DEAL_PROPERTIES = [
-    "dealname",
-    "dealstage",
-    "pipeline",
-    "closedate",
-    "amount",
-    "hubspot_owner_id",
-    "notes_last_updated",
-    "notes_last_contacted",
-    "pipeline_source",
-    "mrr",
-    "status_",
-    "hs_analytics_source",    # NEW — detect deals originating from email threads
-    "createdate",             # NEW — for deal age context in AI analysis
+    "dealname", "dealstage", "pipeline", "closedate",
+    "amount", "hubspot_owner_id",
+    "notes_last_updated", "notes_last_contacted",
+    "pipeline_source", "mrr", "status_",
+    "hs_analytics_source", "createdate",
 ]
 
 CONTACT_PROPERTIES = [
-    "firstname",
-    "lastname",
-    "email",
-    "hubspot_owner_id",
-    "hs_lead_status",
-    "lifecyclestage",
-    "lead_source___amz_prep",
-    "referral_partner_name",
-    "notes_last_contacted",   # NEW — used for L4 stuck status check
-    "notes_last_updated",     # NEW — used for L4 stuck status check
+    "firstname", "lastname", "email",
+    "hubspot_owner_id", "hs_lead_status", "lifecyclestage",
+    "lead_source___amz_prep", "referral_partner_name",
+    "notes_last_contacted", "notes_last_updated",
+    "createdate",   # NEW — needed for SLA deadline calculation
 ]
 
 CLOSED_STAGES = ["closedwon", "closedlost"]

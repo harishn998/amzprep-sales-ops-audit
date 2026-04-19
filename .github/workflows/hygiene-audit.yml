@@ -1,13 +1,14 @@
-name: HubSpot Hygiene Audit
+name: Kiro — HubSpot Hygiene Audit
 
 on:
   schedule:
     # Monday 9:00 AM ET (14:00 UTC) — full weekly audit
     - cron: "0 14 * * 1"
-    # Friday 9:00 AM ET (14:00 UTC) — check-in reminder
+    # Friday 9:00 AM ET (14:00 UTC) — lighter check-in reminder
     - cron: "0 14 * * 5"
+    # Weekdays 8:00 AM ET (13:00 UTC) — daily SLA breach check
+    - cron: "0 13 * * 1-5"
 
-  # Manual trigger — choose mode in the UI
   workflow_dispatch:
     inputs:
       audit_mode:
@@ -18,6 +19,7 @@ on:
         options:
           - weekly
           - reminder
+          - sla
 
 jobs:
   # ── Monday: full weekly audit ──────────────────────────────────────────────
@@ -29,18 +31,15 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-
       - name: Install dependencies
         run: pip install -r requirements.txt
-
       - name: Run weekly audit
         working-directory: scripts/hygiene_audit
         env:
-          AUDIT_ENV:         dev            # change to 'production' to go live
+          AUDIT_ENV:         dev            # ← change to 'production' to go live
           AUDIT_MODE:        weekly
           HUBSPOT_TOKEN:     ${{ secrets.HUBSPOT_TOKEN }}
           SLACK_BOT_TOKEN:   ${{ secrets.SLACK_BOT_TOKEN }}
@@ -58,18 +57,15 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-
       - name: Install dependencies
         run: pip install -r requirements.txt
-
       - name: Run Friday reminder
         working-directory: scripts/hygiene_audit
         env:
-          AUDIT_ENV:         dev            # change to 'production' to go live
+          AUDIT_ENV:         dev
           AUDIT_MODE:        reminder
           HUBSPOT_TOKEN:     ${{ secrets.HUBSPOT_TOKEN }}
           SLACK_BOT_TOKEN:   ${{ secrets.SLACK_BOT_TOKEN }}
@@ -78,23 +74,44 @@ jobs:
           OPENAI_API_KEY:    ${{ secrets.OPENAI_API_KEY }}
         run: python audit.py
 
+  # ── Daily SLA check (weekdays 8 AM ET) ────────────────────────────────────
+  daily-sla-check:
+    name: Daily SLA breach check
+    if: github.event_name == 'schedule' && github.event.schedule == '0 13 * * 1-5'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Run daily SLA check
+        working-directory: scripts/hygiene_audit
+        env:
+          AUDIT_ENV:         dev
+          AUDIT_MODE:        sla
+          HUBSPOT_TOKEN:     ${{ secrets.HUBSPOT_TOKEN }}
+          SLACK_BOT_TOKEN:   ${{ secrets.SLACK_BOT_TOKEN }}
+          SENDGRID_API_KEY:  ${{ secrets.SENDGRID_API_KEY }}
+        run: python sla_audit.py
+
   # ── Manual trigger ─────────────────────────────────────────────────────────
   manual-run:
-    name: Manual audit run
+    name: Manual run
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-
       - name: Install dependencies
         run: pip install -r requirements.txt
-
       - name: Run audit
         working-directory: scripts/hygiene_audit
         env:
@@ -105,4 +122,9 @@ jobs:
           FIREFLIES_API_KEY: ${{ secrets.FIREFLIES_API_KEY }}
           SENDGRID_API_KEY:  ${{ secrets.SENDGRID_API_KEY }}
           OPENAI_API_KEY:    ${{ secrets.OPENAI_API_KEY }}
-        run: python audit.py
+        run: |
+          if [ "$AUDIT_MODE" = "sla" ]; then
+            python sla_audit.py
+          else
+            python audit.py
+          fi

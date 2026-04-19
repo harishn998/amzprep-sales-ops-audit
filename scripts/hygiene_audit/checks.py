@@ -305,3 +305,99 @@ def build_scorecard(results: dict, fireflies_data: dict) -> list:
         })
     rows.sort(key=lambda r: r["open_deals"], reverse=True)
     return rows
+
+
+# =============================================================================
+# NEW — Pipeline source validation (L_PS1, L_PS2)
+# =============================================================================
+
+from config import VALID_PIPELINE_SOURCES, REFERRAL_SOURCE_VALUE
+
+def check_pipeline_source_per_rep(contacts: list) -> dict:
+    """
+    For a flat list of contacts, group pipeline source issues per rep.
+    Returns {owner_id: [issue_dict, ...]}
+    """
+    from config import OWNER_ID_TO_REP
+    per_rep: dict[str, list] = {rep["owner_id"]: [] for rep in REPS}
+
+    for contact in contacts:
+        p   = _props(contact)
+        oid = p.get("hubspot_owner_id", "")
+        if oid not in per_rep:
+            continue
+
+        cid    = contact.get("id", "")
+        name   = _contact_display_name(p)
+        source = p.get("lead_source___amz_prep") or ""
+
+        if not source.strip():
+            issue_label = "Pipeline source not set"
+            issue_code  = "missing"
+        elif source not in VALID_PIPELINE_SOURCES:
+            issue_label = f"Invalid value: '{source}'"
+            issue_code  = "invalid"
+        elif source == REFERRAL_SOURCE_VALUE and not p.get("referral_partner_name"):
+            issue_label = "Referral partner name missing"
+            issue_code  = "referral_missing"
+        else:
+            continue  # No issue — skip
+
+        per_rep[oid].append({
+            "id":          cid,
+            "name":        name,
+            "url":         contact_url(cid),
+            "issue":       issue_code,
+            "issue_label": issue_label,
+            "source":      source,
+        })
+
+    return per_rep
+
+
+# =============================================================================
+# NEW — Deal SLA severity summary (for weekly report section)
+# =============================================================================
+
+from config import DEAL_SLA_WARNING_DAYS, DEAL_SLA_BREACH_DAYS
+
+def build_deal_sla_summary(open_deals: list) -> dict:
+    """
+    Returns per-rep summary of SLA warning/breach counts for the weekly report.
+    {owner_id: {"rep": ..., "warnings": [...], "breaches": [...], "missing_source": [...]}}
+    """
+    per_rep: dict[str, dict] = {}
+    for rep in REPS:
+        per_rep[rep["owner_id"]] = {
+            "rep":            rep,
+            "missing_source": [],
+            "warnings":       [],
+            "breaches":       [],
+        }
+
+    today = datetime.now(tz=timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+
+    for deal in open_deals:
+        p   = _props(deal)
+        oid = p.get("hubspot_owner_id", "")
+        if oid not in per_rep:
+            continue
+
+        deal_id = deal.get("id", "")
+        name    = p.get("dealname") or f"Deal {deal_id}"
+        url     = deal_url(deal_id)
+        source  = p.get("pipeline_source") or ""
+
+        if not source.strip():
+            per_rep[oid]["missing_source"].append({"id": deal_id, "name": name, "url": url})
+
+        days_inactive = _days_since(p.get("notes_last_updated"))
+        stale = days_inactive if days_inactive is not None else 9999
+
+        entry = {"id": deal_id, "name": name, "url": url, "days_stale": days_inactive}
+        if stale >= DEAL_SLA_BREACH_DAYS:
+            per_rep[oid]["breaches"].append(entry)
+        elif stale >= DEAL_SLA_WARNING_DAYS:
+            per_rep[oid]["warnings"].append(entry)
+
+    return per_rep

@@ -220,3 +220,37 @@ def fetch_all_hubspot_data() -> dict:
         "stuck_lead_status":        get_stuck_lead_status_contacts(),   # NEW L4
         "calls_without_notes":      get_calls_without_notes(),          # NEW E2
     }
+
+
+# -----------------------------------------------------------------------------
+# NEW — fetch contacts with lead_status = NEW (for SLA check)
+# -----------------------------------------------------------------------------
+
+def get_new_lead_contacts(lookback_hours: int = 48) -> list:
+    """
+    Fetch contacts with hs_lead_status = NEW created in last lookback_hours.
+    Used by sla_checker.py for the 30-min lead SLA check.
+    """
+    from datetime import datetime, timedelta, timezone as tz
+    cutoff_ms = str(int(
+        (datetime.now(tz=tz.utc) - timedelta(hours=lookback_hours)).timestamp() * 1000
+    ))
+    print(f"  Fetching new leads (last {lookback_hours}h)...")
+    payload = {
+        "filterGroups": [{
+            "filters": [
+                {"propertyName": "hubspot_owner_id", "operator": "IN",  "values": OWNER_IDS},
+                {"propertyName": "hs_lead_status",   "operator": "EQ",  "value":  "NEW"},
+                {"propertyName": "createdate",        "operator": "GTE", "value":  cutoff_ms},
+            ]
+        }],
+        "properties": CONTACT_PROPERTIES + ["createdate"],
+        "limit": 100,
+    }
+    try:
+        contacts = _search("contacts", payload)
+        print(f"  Found {len(contacts)} new leads.")
+        return contacts
+    except Exception as e:
+        print(f"  New leads fetch failed: {e}")
+        return []
