@@ -43,10 +43,21 @@ def _open_dm(user_ids: list) -> str | None:
     return data["channel"]["id"]
 
 
+# Bot display name and icon — overrides workspace-cached settings.
+# This ensures messages always show as 'Kiro' regardless of reinstall status.
+BOT_NAME     = "Kiro"
+BOT_ICON_URL = "https://amzprep.com/favicon.ico"  # swap for AMZ logo URL if available
+
+
 def _post(channel_id: str, text: str) -> bool:
     resp = requests.post(
         f"{SLACK_API}/chat.postMessage",
-        json={"channel": channel_id, "text": text, "mrkdwn": True},
+        json={
+            "channel":  channel_id,
+            "text":     text,
+            "mrkdwn":  True,
+            "username": BOT_NAME,      # forces display name = Kiro
+        },
         headers=_headers(),
         timeout=15,
     )

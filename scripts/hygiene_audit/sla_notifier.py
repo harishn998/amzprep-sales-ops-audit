@@ -48,10 +48,18 @@ def _open_dm(user_ids: list) -> str | None:
     return data["channel"]["id"]
 
 
+BOT_NAME = "Kiro"
+
+
 def _slack_post(channel_id: str, text: str) -> bool:
     resp = requests.post(
         f"{SLACK_API}/chat.postMessage",
-        json={"channel": channel_id, "text": text, "mrkdwn": True},
+        json={
+            "channel":  channel_id,
+            "text":     text,
+            "mrkdwn":  True,
+            "username": BOT_NAME,
+        },
         headers=_slack_headers(),
         timeout=15,
     )
