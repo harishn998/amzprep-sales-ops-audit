@@ -1,6 +1,13 @@
 # =============================================================================
-# email_client.py — SendGrid HTML email notifications
-# Design: inspired by Pattern email — dark header, clean cards, CTA buttons
+# email_client.py — SendGrid HTML emails (Pattern-inspired design v2)
+# =============================================================================
+# Clean, professional email template:
+#   - Dark navy header with Kiro branding + week badge
+#   - 4 KPI metric cards (colour-coded by severity)
+#   - Full issue breakdown table
+#   - Per-deal cards with AI risk pill + reason + action + HubSpot CTA
+#   - Contact sections with status badges
+#   - Dark footer with links
 # =============================================================================
 
 import os
@@ -14,7 +21,8 @@ from sendgrid.helpers.mail import (
 from datetime import datetime, timedelta, timezone
 from config import (
     EMAIL_CC, EMAIL_FROM_ADDRESS, EMAIL_FROM_NAME,
-    REPS, IS_DEV, IS_FRIDAY, resolve_email, message_prefix,
+    IS_DEV, IS_FRIDAY, resolve_email, message_prefix,
+    HUBSPOT_PORTAL_ID,
 )
 
 MAX_DEALS_SHOWN    = 8
@@ -31,115 +39,118 @@ def _week_label() -> str:
 
 
 def _deduped_cc(to_email: str, cc_list: list) -> list:
-    return [addr for addr in cc_list if addr.lower() != to_email.lower()]
+    return [a for a in cc_list if a.lower() != to_email.lower()]
 
 
-# -----------------------------------------------------------------------------
-# HTML components
-# -----------------------------------------------------------------------------
+# =============================================================================
+# CSS — inline-friendly, Gmail-compatible
+# =============================================================================
 
-STYLE = """<style>
+CSS = """
+<style>
 *{box-sizing:border-box;margin:0;padding:0}
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;
-     font-size:14px;color:#1a1a1a;background:#f0f2f5}
-a{color:#1264a3;text-decoration:none}
-a:hover{text-decoration:underline}
-.wrap{max-width:620px;margin:24px auto}
-/* Header — dark navy like Pattern */
-.header{background:#0b1829;border-radius:10px 10px 0 0;padding:28px 36px;
-        display:flex;align-items:center;justify-content:space-between}
-.brand{color:#ffffff;font-size:20px;font-weight:700;letter-spacing:.5px}
-.badge{background:rgba(255,255,255,.12);color:#9ab0c8;font-size:11px;
-       font-weight:600;padding:4px 12px;border-radius:20px;
-       letter-spacing:.8px;text-transform:uppercase}
-/* Dev/Fri banner */
-.dev-bar{background:#fef3c7;border-left:4px solid #f59e0b;padding:10px 24px;
-         font-size:12px;color:#92400e;font-weight:600}
-.fri-bar{background:#eff6ff;border-left:4px solid #3b82f6;padding:10px 24px;
-         font-size:12px;color:#1e40af;font-weight:600}
+body,table,td{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif}
+body{font-size:14px;color:#1f2937;background:#f3f4f6}
+a{color:#1e40af;text-decoration:none}
+img{border:0;display:block}
+
+/* Layout */
+.email-wrap{width:100%;max-width:640px;margin:0 auto}
+.email-body{background:#ffffff;border-radius:0 0 12px 12px}
+
+/* Header */
+.hdr{background:#0b1829;border-radius:12px 12px 0 0;padding:24px 32px}
+.hdr-inner{display:flex;align-items:center;justify-content:space-between}
+.hdr-brand{color:#ffffff;font-size:20px;font-weight:700;letter-spacing:0.3px}
+.hdr-badge{background:rgba(255,255,255,0.12);color:#93c5fd;font-size:11px;font-weight:700;padding:4px 14px;border-radius:20px;letter-spacing:1px;text-transform:uppercase}
+
+/* Banners */
+.banner-dev{background:#fef3c7;border-left:4px solid #f59e0b;padding:10px 32px;font-size:12px;color:#92400e;font-weight:600}
+.banner-fri{background:#eff6ff;border-left:4px solid #3b82f6;padding:10px 32px;font-size:12px;color:#1e40af;font-weight:600}
+
 /* Hero */
-.hero{background:#ffffff;padding:32px 36px 24px}
-.hero-name{font-size:26px;font-weight:700;color:#0b1829;line-height:1.2}
-.hero-sub{font-size:13px;color:#6b7280;margin-top:6px}
-/* KPI cards row */
-.kpi-row{background:#ffffff;padding:0 36px 24px;display:flex;gap:12px}
-.kpi{flex:1;background:#f8f9fa;border-radius:8px;padding:14px 12px;text-align:center;
-     border-top:3px solid #e5e7eb}
-.kpi.red{border-top-color:#dc2626}
-.kpi.amber{border-top-color:#d97706}
-.kpi.green{border-top-color:#16a34a}
-.kpi-n{font-size:28px;font-weight:700;line-height:1;color:#0b1829}
-.kpi-n.red{color:#dc2626}
-.kpi-n.amber{color:#d97706}
-.kpi-n.green{color:#16a34a}
-.kpi-l{font-size:11px;color:#6b7280;margin-top:4px;font-weight:500}
-/* Body */
-.body{background:#ffffff;padding:0 36px 8px}
-/* Section */
-.sec-title{font-size:11px;font-weight:700;color:#6b7280;text-transform:uppercase;
-           letter-spacing:.8px;margin:28px 0 12px;padding-bottom:8px;
-           border-bottom:1px solid #e5e7eb}
-/* Deal card */
-.deal-card{border:1px solid #e5e7eb;border-radius:8px;padding:14px 16px;
-           margin-bottom:10px;background:#fafafa}
-.deal-card:hover{border-color:#d1d5db}
-.deal-top{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
-.deal-name{font-size:14px;font-weight:600;color:#0b1829;flex:1}
+.hero{padding:28px 32px 20px}
+.hero-title{font-size:22px;font-weight:700;color:#0b1829;line-height:1.3;margin-bottom:6px}
+.hero-sub{font-size:13px;color:#6b7280}
+
+/* KPI strip */
+.kpi-strip{padding:0 32px 24px;display:flex;gap:10px}
+.kpi-card{flex:1;background:#f9fafb;border:1px solid #e5e7eb;border-radius:10px;padding:14px 12px;text-align:center;border-top:3px solid #e5e7eb}
+.kpi-card.red{border-top-color:#ef4444}
+.kpi-card.amber{border-top-color:#f59e0b}
+.kpi-card.blue{border-top-color:#3b82f6}
+.kpi-card.green{border-top-color:#22c55e}
+.kpi-num{font-size:26px;font-weight:800;line-height:1;color:#0b1829}
+.kpi-num.red{color:#dc2626}
+.kpi-num.amber{color:#d97706}
+.kpi-num.blue{color:#2563eb}
+.kpi-num.green{color:#16a34a}
+.kpi-label{font-size:11px;color:#6b7280;margin-top:5px;font-weight:500;line-height:1.3}
+
+/* Sections */
+.section{padding:0 32px 4px}
+.section-title{font-size:10px;font-weight:700;color:#9ca3af;text-transform:uppercase;letter-spacing:1px;margin:24px 0 10px;padding-bottom:8px;border-bottom:1px solid #f3f4f6}
+
+/* Issue table */
+.issue-table{width:100%;border-collapse:collapse;font-size:13px;margin-bottom:4px}
+.issue-table th{background:#f9fafb;padding:9px 12px;text-align:left;font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.5px;border-bottom:2px solid #e5e7eb}
+.issue-table td{padding:9px 12px;border-bottom:1px solid #f3f4f6;color:#374151}
+.issue-table td.count{text-align:right;font-weight:700;color:#111827}
+.issue-table tr.subtotal td{background:#f9fafb;font-weight:700;border-top:1px solid #e5e7eb}
+.issue-table tr.grand td{background:#f3f4f6;font-weight:800;font-size:14px;border-top:2px solid #d1d5db}
+.issue-table tr.gap td{padding:4px;border:none}
+
+/* Deal cards */
+.deal-card{border:1px solid #e5e7eb;border-radius:10px;padding:14px 16px;margin-bottom:10px;background:#fafafa}
+.deal-top{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:5px}
+.deal-name{font-size:14px;font-weight:600;color:#0b1829}
 .deal-name a{color:#0b1829}
-.deal-name a:hover{color:#1264a3}
-.risk-pill{font-size:10px;font-weight:700;padding:3px 10px;border-radius:12px;
-           white-space:nowrap;flex-shrink:0;margin-top:2px}
+.deal-meta{font-size:12px;color:#6b7280;margin-bottom:6px}
+.risk-pill{display:inline-block;font-size:10px;font-weight:700;padding:3px 10px;border-radius:12px;white-space:nowrap;flex-shrink:0}
 .risk-high{background:#fef2f2;color:#dc2626;border:1px solid #fecaca}
 .risk-med{background:#fffbeb;color:#d97706;border:1px solid #fde68a}
 .risk-low{background:#f0fdf4;color:#16a34a;border:1px solid #bbf7d0}
-.deal-meta{font-size:12px;color:#6b7280;margin-top:5px}
-.deal-ai{font-size:12px;margin-top:8px;padding-top:8px;border-top:1px dashed #e5e7eb}
-.ai-reason{color:#374151}
-.ai-action{color:#1264a3;font-weight:500;margin-top:3px}
-.hs-btn{display:inline-block;font-size:11px;font-weight:600;color:#1264a3;
-        background:#eff6ff;border:1px solid #bfdbfe;border-radius:5px;
-        padding:4px 10px;margin-top:8px;text-decoration:none}
-/* Summary table */
-.sum-table{width:100%;border-collapse:collapse;font-size:13px;margin:4px 0 16px}
-.sum-table th{background:#f3f4f6;padding:8px 12px;text-align:left;
-              font-size:11px;font-weight:600;color:#6b7280;
-              text-transform:uppercase;letter-spacing:.5px}
-.sum-table td{padding:8px 12px;border-bottom:1px solid #f3f4f6;color:#374151}
-.sum-table td:last-child{font-weight:600;text-align:right;color:#0b1829}
-.sum-table tr.total td{background:#f3f4f6;font-weight:700;border-bottom:none}
-.sum-table tr.section-gap td{padding:4px;background:transparent;border:none}
+.ai-block{background:#f5f3ff;border-left:3px solid #7c3aed;border-radius:0 6px 6px 0;padding:8px 12px;margin-top:8px;font-size:12px}
+.ai-label{font-weight:700;color:#6d28d9;margin-right:6px}
+.ai-text{color:#374151}
+.ai-action{color:#2563eb;font-weight:500;margin-top:3px;font-style:italic}
+.hs-btn{display:inline-block;background:#0b1829;color:#ffffff;font-size:11px;font-weight:600;padding:6px 14px;border-radius:6px;text-decoration:none;margin-top:10px}
+.more-note{font-size:12px;color:#9ca3af;font-style:italic;margin:4px 0 12px 4px}
+
 /* Contact list */
-.contact-row{display:flex;align-items:center;justify-content:space-between;
-             padding:9px 0;border-bottom:1px solid #f3f4f6;font-size:13px}
-.contact-row:last-child{border-bottom:none}
-.contact-name a{color:#0b1829;font-weight:500}
-.contact-meta{font-size:11px;color:#6b7280}
-.contact-status{font-size:11px;background:#fef3c7;color:#92400e;
-                padding:2px 8px;border-radius:10px;font-weight:600}
-/* Action items */
-.action-box{background:#f0f9ff;border:1px solid #bae6fd;border-radius:8px;
-            padding:16px 20px;margin:24px 0}
-.action-box h3{font-size:13px;font-weight:700;color:#0b1829;margin-bottom:10px}
-.action-box ol{padding-left:18px;font-size:13px;color:#374151}
-.action-box li{margin-bottom:6px;line-height:1.5}
-/* Fireflies */
-.ff-bar{display:flex;align-items:center;justify-content:space-between;
-        background:#f8f9fa;border-radius:8px;padding:12px 16px;
-        font-size:13px;margin:16px 0}
+.contact-item{display:flex;align-items:center;justify-content:space-between;padding:9px 0;border-bottom:1px solid #f3f4f6;font-size:13px}
+.contact-item:last-child{border-bottom:none}
+.contact-name a{color:#1f2937;font-weight:500}
+.status-tag{font-size:11px;background:#fef3c7;color:#92400e;padding:2px 8px;border-radius:10px;font-weight:600;white-space:nowrap}
+.days-tag{font-size:11px;background:#fef2f2;color:#dc2626;padding:2px 8px;border-radius:10px;font-weight:600;margin-left:6px}
+
+/* Fireflies bar */
+.ff-bar{display:flex;align-items:center;justify-content:space-between;background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:12px 16px;font-size:13px;margin-bottom:16px}
 .ff-ok{color:#16a34a;font-weight:600}
 .ff-warn{color:#d97706;font-weight:600}
+
+/* Action box */
+.action-box{background:#eff6ff;border:1px solid #bfdbfe;border-radius:10px;padding:16px 20px;margin-bottom:16px}
+.action-box-title{font-size:13px;font-weight:700;color:#1e40af;margin-bottom:10px}
+.action-box ol{padding-left:18px;font-size:13px;color:#1e3a5f;line-height:1.8}
+
 /* Footer */
-.footer{background:#0b1829;border-radius:0 0 10px 10px;
-        padding:20px 36px;text-align:center}
-.footer-links{display:flex;justify-content:center;gap:24px;margin-bottom:10px}
-.footer-links a{color:#9ab0c8;font-size:12px;text-decoration:none}
-.footer-links a:hover{color:#ffffff}
-.footer-copy{color:#4b5563;font-size:11px}
-.more-note{font-size:12px;color:#6b7280;font-style:italic;margin:4px 0 12px;padding-left:4px}
-</style>"""
+.footer{background:#0b1829;border-radius:0 0 12px 12px;padding:20px 32px;text-align:center}
+.footer-links{margin-bottom:10px}
+.footer-links a{color:#93c5fd;font-size:12px;text-decoration:none;margin:0 12px}
+.footer-copy{color:#374151;font-size:11px}
+</style>
+"""
 
 
-def _risk_pill(risk: str | None) -> str:
+def _kpi_color(n: int, warn: int = 3, crit: int = 15) -> str:
+    if n == 0:      return "green"
+    if n < warn:    return "amber"
+    if n < crit:    return "amber"
+    return "red"
+
+
+def _risk_pill_html(risk: str | None) -> str:
     if not risk:
         return ""
     mapping = {
@@ -150,25 +161,22 @@ def _risk_pill(risk: str | None) -> str:
     return mapping.get(risk, "")
 
 
-def _kpi_class(n: int, warn: int = 5, crit: int = 20) -> str:
-    if n == 0:   return "green"
-    if n < warn: return "amber"
-    return "red"
-
-
 def _deal_card_html(deal: dict, stat: str) -> str:
-    risk     = deal.get("ai_risk")
-    reason   = deal.get("ai_reason")
-    action   = deal.get("ai_action")
-    pill     = _risk_pill(risk)
+    risk   = deal.get("ai_risk")
+    reason = deal.get("ai_reason")
+    action = deal.get("ai_action")
+    pill   = _risk_pill_html(risk)
+
     ai_block = ""
     if reason:
         ai_block = (
-            f'<div class="deal-ai">'
-            f'<div class="ai-reason">{reason}</div>'
-            + (f'<div class="ai-action">Next step: {action}</div>' if action else "")
+            f'<div class="ai-block">'
+            f'<span class="ai-label">AI:</span>'
+            f'<span class="ai-text">{reason}</span>'
+            + (f'<div class="ai-action">→ {action}</div>' if action else "")
             + "</div>"
         )
+
     return (
         f'<div class="deal-card">'
         f'<div class="deal-top">'
@@ -177,12 +185,42 @@ def _deal_card_html(deal: dict, stat: str) -> str:
         f'</div>'
         f'<div class="deal-meta">{stat}</div>'
         f'{ai_block}'
-        f'<a href="{deal["url"]}" class="hs-btn">View in HubSpot</a>'
+        f'<a href="{deal["url"]}" class="hs-btn">View in HubSpot &rarr;</a>'
         f'</div>'
     )
 
 
-def _build_html_body(rep: dict, data: dict, week_label: str, ff_data: dict) -> str:
+def _contact_row_html(c: dict, status_html: str = "") -> str:
+    return (
+        f'<div class="contact-item">'
+        f'<div class="contact-name"><a href="{c["url"]}">{c["name"]}</a></div>'
+        f'<div>{status_html}</div>'
+        f'</div>'
+    )
+
+
+def _section_html(title: str, body: str) -> str:
+    return (
+        f'<div class="section">'
+        f'<div class="section-title">{title}</div>'
+        f'{body}'
+        f'</div>'
+    )
+
+
+def _deals_section(title: str, deals: list, stat_fn) -> str:
+    if not deals:
+        return ""
+    shown   = deals[:MAX_DEALS_SHOWN]
+    cards   = "".join(_deal_card_html(d, stat_fn(d)) for d in shown)
+    overflow = (
+        f'<p class="more-note">+ {len(deals) - MAX_DEALS_SHOWN} more — open HubSpot to view all</p>'
+        if len(deals) > MAX_DEALS_SHOWN else ""
+    )
+    return _section_html(title, cards + overflow)
+
+
+def _build_html(rep: dict, data: dict, week_label: str, ff_data: dict) -> str:
     oid        = rep["owner_id"]
     ff         = ff_data.get(oid, {"count": 0, "status": "NO DATA"})
     open_count = data["open_deals"]
@@ -201,32 +239,42 @@ def _build_html_body(rep: dict, data: dict, week_label: str, ff_data: dict) -> s
     ])
     grand_total = deal_total + len(ml) + len(sk) + len(cn)
 
-    # Banners
     dev_banner = (
-        f'<div class="dev-bar">DEV TEST — This audit is for: {rep["name"]} | '
-        f'Production email: {rep["email"]}</div>'
+        f'<div class="banner-dev">DEV TEST — This report is for: {rep["name"]} ({rep["email"]})</div>'
     ) if IS_DEV else ""
 
     fri_banner = (
-        '<div class="fri-bar">Friday Check-In — unresolved items from Monday\'s audit</div>'
+        '<div class="banner-fri">Friday Check-In — summary of open items from Monday\'s audit</div>'
     ) if IS_FRIDAY else ""
 
-    # KPI cards
-    kpi_pd_cls = _kpi_class(len(pd))
-    kpi_nc_cls = _kpi_class(len(nc))
-    kpi_st_cls = _kpi_class(len(st))
-    kpi_tot_cls = _kpi_class(grand_total, 10, 50)
+    # KPI strip
+    pd_c  = _kpi_color(len(pd))
+    nc_c  = _kpi_color(len(nc))
+    st_c  = _kpi_color(len(st))
+    tot_c = _kpi_color(grand_total, 10, 50)
 
-    kpi_row = f"""
-    <div class="kpi-row">
-      <div class="kpi {kpi_pd_cls}"><div class="kpi-n {kpi_pd_cls}">{len(pd)}</div><div class="kpi-l">Past-Due</div></div>
-      <div class="kpi {kpi_nc_cls}"><div class="kpi-n {kpi_nc_cls}">{len(nc)}</div><div class="kpi-l">No Contact 14d+</div></div>
-      <div class="kpi {kpi_st_cls}"><div class="kpi-n {kpi_st_cls}">{len(st)}</div><div class="kpi-l">Stale Deals</div></div>
-      <div class="kpi {kpi_tot_cls}"><div class="kpi-n {kpi_tot_cls}">{grand_total}</div><div class="kpi-l">Total Issues</div></div>
-    </div>"""
+    kpi_strip = f"""
+<div class="kpi-strip">
+  <div class="kpi-card {pd_c}">
+    <div class="kpi-num {pd_c}">{len(pd)}</div>
+    <div class="kpi-label">Past-Due Deals</div>
+  </div>
+  <div class="kpi-card {nc_c}">
+    <div class="kpi-num {nc_c}">{len(nc)}</div>
+    <div class="kpi-label">No Contact 14d+</div>
+  </div>
+  <div class="kpi-card {st_c}">
+    <div class="kpi-num {st_c}">{len(st)}</div>
+    <div class="kpi-label">Stale Deals</div>
+  </div>
+  <div class="kpi-card {tot_c}">
+    <div class="kpi-num {tot_c}">{grand_total}</div>
+    <div class="kpi-label">Total Issues</div>
+  </div>
+</div>"""
 
-    # Summary table
-    sum_rows = [
+    # Issue table
+    issue_rows = [
         ("Past-due close date (2025+)",   len(pd)),
         ("Stale — no CRM activity 14d+",  len(st)),
         ("No contact logged 14d+",        len(nc)),
@@ -236,45 +284,33 @@ def _build_html_body(rep: dict, data: dict, week_label: str, ff_data: dict) -> s
         ("Missing MRR",                   len(data["missing_mrr"])),
         ("Missing deal status",           len(data["missing_status"])),
     ]
-    sum_html = "".join(
-        f"<tr><td>{label}</td><td>{n}</td></tr>"
-        for label, n in sum_rows
+    issue_html = "".join(
+        f"<tr><td>{label}</td><td class='count'>{n}</td></tr>"
+        for label, n in issue_rows
     )
-    sum_html += (
-        f'<tr><td><strong>Deal issues total</strong></td><td><strong>{deal_total}</strong></td></tr>'
-        f'<tr class="section-gap"><td colspan="2"></td></tr>'
-        f"<tr><td>Missing lead status</td><td>{len(ml)}</td></tr>"
-        f"<tr><td>Stuck in open status (7d+)</td><td>{len(sk)}</td></tr>"
-        f"<tr><td>Calls with no notes (30d)</td><td>{len(cn)}</td></tr>"
-        f'<tr class="total"><td>TOTAL ISSUES</td><td>{grand_total}</td></tr>'
+    issue_html += (
+        f'<tr class="subtotal"><td>Deal issues total</td><td class="count">{deal_total}</td></tr>'
+        f'<tr class="gap"><td colspan="2"></td></tr>'
+        f"<tr><td>Missing lead status</td><td class='count'>{len(ml)}</td></tr>"
+        f"<tr><td>Stuck in open status (7d+)</td><td class='count'>{len(sk)}</td></tr>"
+        f"<tr><td>Calls with no notes (30d)</td><td class='count'>{len(cn)}</td></tr>"
+        f'<tr class="grand"><td>TOTAL ISSUES</td><td class="count">{grand_total}</td></tr>'
     )
 
-    summary_section = f"""
-    <div class="body">
-      <div class="sec-title">Full Issue Breakdown</div>
-      <table class="sum-table">
-        <thead><tr><th>Issue</th><th style="text-align:right">Count</th></tr></thead>
-        <tbody>{sum_html}</tbody>
-      </table>
-    </div>"""
+    issue_section = _section_html(
+        "Full Issue Breakdown",
+        f'<table class="issue-table">'
+        f'<thead><tr><th>Issue</th><th style="text-align:right">Count</th></tr></thead>'
+        f'<tbody>{issue_html}</tbody>'
+        f'</table>'
+    )
 
     # Deal sections
-    def _deals_section(title: str, deals: list, stat_fn) -> str:
-        if not deals:
-            return ""
-        shown = deals[:MAX_DEALS_SHOWN]
-        cards = "".join(_deal_card_html(d, stat_fn(d)) for d in shown)
-        overflow = (
-            f'<p class="more-note">+ {len(deals) - MAX_DEALS_SHOWN} more — open HubSpot to view all</p>'
-            if len(deals) > MAX_DEALS_SHOWN else ""
-        )
-        return f"""<div class="body"><div class="sec-title">{title}</div>{cards}{overflow}</div>"""
-
     past_due_html = _deals_section(
         f"Past-Due Deals — {len(pd)} total, oldest first", pd,
         lambda d: f"Close date: {d['close_date_str'] or 'not set'}"
     )
-    no_contact_html = _deals_section(
+    nc_html = _deals_section(
         f"No Contact Logged in 14+ Days — {len(nc)} total", nc,
         lambda d: "Never contacted" if d["days_since_contact"] is None else f"{d['days_since_contact']} days since last contact"
     )
@@ -284,106 +320,121 @@ def _build_html_body(rep: dict, data: dict, week_label: str, ff_data: dict) -> s
     )
     email_html = _deals_section(
         f"Email-Sourced Deals — No Follow-Up — {len(ef)} total", ef,
-        lambda d: "Originated from email thread — no contact logged in HubSpot"
+        lambda d: "Came from email thread — no contact logged in HubSpot"
     )
 
     # Contact sections
-    def _contact_row_html(c: dict, meta_html: str = "") -> str:
-        return (
-            f'<div class="contact-row">'
-            f'<div class="contact-name"><a href="{c["url"]}">{c["name"]}</a></div>'
-            f'<div class="contact-meta">{meta_html}</div>'
-            f'</div>'
-        )
-
     stuck_html = ""
     if sk:
         rows = "".join(
             _contact_row_html(
                 c,
-                f'<span class="contact-status">{(c.get("lead_status") or "").replace("_"," ").title()}</span>'
-                + (f'  {c["days_stuck"]}d stuck' if c.get("days_stuck") else "")
+                f'<span class="status-tag">{(c.get("lead_status") or "").replace("_"," ").title()}</span>'
+                + (f'<span class="days-tag">{c["days_stuck"]}d stuck</span>' if c.get("days_stuck") else "")
             )
             for c in sk[:MAX_CONTACTS_SHOWN]
         )
-        overflow = f'<p class="more-note">+ {len(sk)-MAX_CONTACTS_SHOWN} more</p>' if len(sk) > MAX_CONTACTS_SHOWN else ""
-        stuck_html = f'<div class="body"><div class="sec-title">Contacts Stuck in Lead Status — {len(sk)} total, 7d+</div>{rows}{overflow}</div>'
+        overflow = f'<p class="more-note">+ {len(sk) - MAX_CONTACTS_SHOWN} more</p>' if len(sk) > MAX_CONTACTS_SHOWN else ""
+        stuck_html = _section_html(f"Contacts Stuck in Lead Status — {len(sk)} total", rows + overflow)
 
     missing_lead_html = ""
     if ml:
         rows = "".join(_contact_row_html(c) for c in ml[:MAX_CONTACTS_SHOWN])
-        overflow = f'<p class="more-note">+ {len(ml)-MAX_CONTACTS_SHOWN} more</p>' if len(ml) > MAX_CONTACTS_SHOWN else ""
-        missing_lead_html = f'<div class="body"><div class="sec-title">Contacts Missing Lead Status — {len(ml)} total</div>{rows}{overflow}</div>'
+        overflow = f'<p class="more-note">+ {len(ml) - MAX_CONTACTS_SHOWN} more</p>' if len(ml) > MAX_CONTACTS_SHOWN else ""
+        missing_lead_html = _section_html(f"Contacts Missing Lead Status — {len(ml)} total", rows + overflow)
 
     calls_html = ""
     if cn:
-        rows = "".join(f'<div class="contact-row"><div>{c["title"]}</div></div>' for c in cn[:MAX_CONTACTS_SHOWN])
-        calls_html = f'<div class="body"><div class="sec-title">Calls Logged With No Notes — {len(cn)} in last 30 days</div>{rows}</div>'
+        rows = "".join(
+            f'<div class="contact-item"><div class="contact-name">{c["title"]}</div></div>'
+            for c in cn[:MAX_CONTACTS_SHOWN]
+        )
+        calls_html = _section_html(f"Calls Logged With No Notes — {len(cn)} in last 30 days", rows)
 
-    # Fireflies bar
+    # Fireflies
     if ff["status"] == "OK":
-        ff_bar = f'<div class="body"><div class="ff-bar"><span>Fireflies — Previous Week</span><span class="ff-ok">{ff["count"]} transcript(s) recorded</span></div></div>'
+        ff_content = f'<div class="ff-ok">&#10003;  {ff["count"]} transcript(s) recorded this week</div>'
     else:
-        ff_bar = '<div class="body"><div class="ff-bar"><span>Fireflies — Previous Week</span><span class="ff-warn">No transcripts recorded — check calendar connection</span></div></div>'
+        ff_content = '<div class="ff-warn">&#10007;  No transcripts recorded — check calendar connection</div>'
+    ff_section = _section_html(
+        "Fireflies Call Tracking",
+        f'<div class="ff-bar"><span style="color:#374151">Fireflies — Previous Week</span>{ff_content}</div>'
+    )
 
     # Action box
-    action_box = """<div class="body"><div class="action-box">
-      <h3>Action Items This Week</h3>
-      <ol>
-        <li>Update or close-lost any deals with past-due close dates</li>
-        <li>Log a call, email, or note on every deal with no recent contact</li>
-        <li>Fill in Deal Amount, Pipeline Source, MRR, and Deal Status on all open deals</li>
-        <li>For email-sourced deals — log your first contact engagement in HubSpot</li>
-        <li>Advance or close contacts stuck in Attempted to Contact or In Progress</li>
-        <li>Add outcome notes to any calls logged without them</li>
-        <li>Assign Lead Status to all contacts that are missing one</li>
-      </ol>
-    </div></div>"""
+    action_box = """
+<div class="section">
+<div class="action-box">
+  <div class="action-box-title">Action Items This Week</div>
+  <ol>
+    <li>Update or close-lost any deals with past-due close dates</li>
+    <li>Log a call, email, or note on every deal with no recent contact</li>
+    <li>Fill in Deal Amount, Pipeline Source, MRR, and Deal Status</li>
+    <li>For email-sourced deals — log your first contact in HubSpot</li>
+    <li>Advance or close contacts stuck in Attempted to Contact or In Progress</li>
+    <li>Add outcome notes to any calls logged without them</li>
+    <li>Assign Lead Status to all contacts that are missing one</li>
+  </ol>
+</div>
+</div>"""
+
+    hs_url = f"https://app.hubspot.com/contacts/{HUBSPOT_PORTAL_ID}"
 
     return f"""<!DOCTYPE html>
 <html lang="en">
-<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">{STYLE}</head>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Kiro Hygiene Report — {rep['first_name']}</title>
+{CSS}
+</head>
 <body>
-<div class="wrap">
+<div class="email-wrap">
 
-  <div class="header">
-    <div class="brand">AMZ Prep</div>
-    <div class="badge">Hygiene Audit</div>
+  <div class="hdr">
+    <div class="hdr-inner">
+      <div class="hdr-brand">Kiro</div>
+      <div class="hdr-badge">Hygiene Report</div>
+    </div>
   </div>
 
   {dev_banner}{fri_banner}
 
-  <div class="hero">
-    <div class="hero-name">Hi {rep['first_name']},</div>
-    <div class="hero-name">Here is your pipeline health report.</div>
-    <div class="hero-sub">Week of {week_label} &nbsp;·&nbsp; {open_count} open deals in review</div>
-  </div>
+  <div class="email-body">
 
-  {kpi_row}
-  {summary_section}
-  {past_due_html}
-  {no_contact_html}
-  {stale_html}
-  {email_html}
-  {stuck_html}
-  {missing_lead_html}
-  {calls_html}
-  {ff_bar}
-  {action_box}
+    <div class="hero">
+      <div class="hero-title">Hi {rep['first_name']}, here is your pipeline health report.</div>
+      <div class="hero-sub">Week of {week_label} &nbsp;&middot;&nbsp; {open_count} open deals in review</div>
+    </div>
 
-  <div class="body" style="padding-bottom:24px">
-    <p style="font-size:12px;color:#9ca3af;text-align:center">
-      All unresolved issues carry forward every week until resolved.
-    </p>
+    {kpi_strip}
+    {issue_section}
+    {past_due_html}
+    {nc_html}
+    {stale_html}
+    {email_html}
+    {stuck_html}
+    {missing_lead_html}
+    {calls_html}
+    {ff_section}
+    {action_box}
+
+    <div class="section" style="padding-bottom:24px">
+      <p style="font-size:12px;color:#9ca3af;text-align:center">
+        All unresolved issues carry forward every week until resolved.
+      </p>
+    </div>
+
   </div>
 
   <div class="footer">
     <div class="footer-links">
       <a href="https://amzprep.com">AMZ Prep</a>
-      <a href="https://app.hubspot.com/contacts/878268">Open HubSpot</a>
-      <a href="mailto:{EMAIL_FROM_ADDRESS}?subject=Unsubscribe">Unsubscribe</a>
+      <a href="{hs_url}">Open HubSpot</a>
+      <a href="{hs_url}/deals">Deals</a>
+      <a href="mailto:{EMAIL_FROM_ADDRESS}?subject=unsubscribe">Unsubscribe</a>
     </div>
-    <div class="footer-copy">2026 &copy; AMZ Prep &nbsp;·&nbsp; Hygiene Audit &nbsp;·&nbsp; amzprep.com</div>
+    <div class="footer-copy">2026 &copy; AMZ Prep &nbsp;&middot;&nbsp; Kiro Sales Ops &nbsp;&middot;&nbsp; amzprep.com</div>
   </div>
 
 </div>
@@ -391,9 +442,9 @@ def _build_html_body(rep: dict, data: dict, week_label: str, ff_data: dict) -> s
 </html>"""
 
 
-# -----------------------------------------------------------------------------
+# =============================================================================
 # Send function
-# -----------------------------------------------------------------------------
+# =============================================================================
 
 def send_rep_emails(results: dict, ff_data: dict) -> None:
     api_key = os.environ.get("SENDGRID_API_KEY", "")
@@ -408,29 +459,30 @@ def send_rep_emails(results: dict, ff_data: dict) -> None:
 
     print(f"\n[Email] Sending per-rep {mode_str} emails...")
     if IS_DEV:
-        print(f"  [DEV] To: {resolve_email(list(results.values())[0]['rep'])} | CC: (deduped per send)")
+        first_rep = next(iter(results.values()))["rep"]
+        print(f"  [DEV] To: {resolve_email(first_rep)} | CC: (deduped per send)")
 
     for oid, data in results.items():
         rep      = data["rep"]
         to_email = resolve_email(rep)
         cc_list  = _deduped_cc(to_email, EMAIL_CC)
-        subject  = f"{prefix}AMZ Prep {mode_str} — {rep['first_name']} — Week of {week_label}"
+        subject  = f"{prefix}Kiro {mode_str} — {rep['first_name']} — Week of {week_label}"
 
         print(f"  {rep['name']} → To: {to_email} | CC: {cc_list}")
 
-        html_body  = _build_html_body(rep, data, week_label, ff_data)
+        html_body = _build_html(rep, data, week_label, ff_data)
+
         plain_body = (
-            f"{prefix}AMZ Prep {mode_str} — {rep['first_name']}\n"
+            f"{prefix}Kiro {mode_str} — {rep['first_name']}\n"
             f"Week of {week_label} | {data['open_deals']} open deals\n\n"
-            f"Past-due:           {len(data['past_due'])}\n"
-            f"No recent contact:  {len(data['no_recent_contact'])}\n"
-            f"Stale:              {len(data['stale'])}\n"
-            f"Stuck lead status:  {len(data.get('stuck_lead_status',[]))}\n"
-            f"Missing lead:       {len(data['missing_lead_status'])}\n"
-            f"Calls no notes:     {len(data.get('calls_without_notes',[]))}\n\n"
-            "View the full HTML version in your email client.\n"
-            "Open HubSpot: https://app.hubspot.com/contacts/878268\n\n"
-            "— AMZ Prep Hygiene Audit"
+            f"Past-due:          {len(data['past_due'])}\n"
+            f"No recent contact: {len(data['no_recent_contact'])}\n"
+            f"Stale:             {len(data['stale'])}\n"
+            f"Missing lead:      {len(data['missing_lead_status'])}\n"
+            f"Stuck status:      {len(data.get('stuck_lead_status',[]))}\n"
+            f"Calls no notes:    {len(data.get('calls_without_notes',[]))}\n\n"
+            f"Open HubSpot: https://app.hubspot.com/contacts/{HUBSPOT_PORTAL_ID}\n\n"
+            "— Kiro, AMZ Prep Sales Ops"
         )
 
         message = Mail()
@@ -446,7 +498,6 @@ def send_rep_emails(results: dict, ff_data: dict) -> None:
         tracking.click_tracking = ClickTracking(enable=False, enable_text=False)
         tracking.open_tracking  = OpenTracking(enable=False)
         message.tracking_settings = tracking
-
         message.add_header(Header(
             "List-Unsubscribe",
             f"<mailto:{EMAIL_FROM_ADDRESS}?subject=unsubscribe>"
