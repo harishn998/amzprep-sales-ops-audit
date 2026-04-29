@@ -20,6 +20,14 @@ on:
           - weekly
           - reminder
           - sla
+      force_sla:
+        description: "Force SLA alerts — bypasses 48h new-breach window (1=on, use for testing only)"
+        required: false
+        default: "0"
+        type: choice
+        options:
+          - "0"
+          - "1"
 
 jobs:
   # ── Monday: full weekly audit ──────────────────────────────────────────────
@@ -28,7 +36,6 @@ jobs:
     if: github.event_name == 'schedule' && github.event.schedule == '0 14 * * 1'
     runs-on: ubuntu-latest
     timeout-minutes: 20
-
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -39,7 +46,7 @@ jobs:
       - name: Run weekly audit
         working-directory: scripts/hygiene_audit
         env:
-          AUDIT_ENV:         dev            # ← change to 'production' to go live
+          AUDIT_ENV:         dev        # change to 'production' to go live
           AUDIT_MODE:        weekly
           HUBSPOT_TOKEN:     ${{ secrets.HUBSPOT_TOKEN }}
           SLACK_BOT_TOKEN:   ${{ secrets.SLACK_BOT_TOKEN }}
@@ -54,7 +61,6 @@ jobs:
     if: github.event_name == 'schedule' && github.event.schedule == '0 14 * * 5'
     runs-on: ubuntu-latest
     timeout-minutes: 15
-
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -80,7 +86,6 @@ jobs:
     if: github.event_name == 'schedule' && github.event.schedule == '0 13 * * 1-5'
     runs-on: ubuntu-latest
     timeout-minutes: 15
-
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -93,6 +98,7 @@ jobs:
         env:
           AUDIT_ENV:         dev
           AUDIT_MODE:        sla
+          AUDIT_SLA_FORCE:   "0"     # never force in scheduled run
           HUBSPOT_TOKEN:     ${{ secrets.HUBSPOT_TOKEN }}
           SLACK_BOT_TOKEN:   ${{ secrets.SLACK_BOT_TOKEN }}
           SENDGRID_API_KEY:  ${{ secrets.SENDGRID_API_KEY }}
@@ -104,7 +110,6 @@ jobs:
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 20
-
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -117,6 +122,7 @@ jobs:
         env:
           AUDIT_ENV:         dev
           AUDIT_MODE:        ${{ github.event.inputs.audit_mode || 'weekly' }}
+          AUDIT_SLA_FORCE:   ${{ github.event.inputs.force_sla || '0' }}
           HUBSPOT_TOKEN:     ${{ secrets.HUBSPOT_TOKEN }}
           SLACK_BOT_TOKEN:   ${{ secrets.SLACK_BOT_TOKEN }}
           FIREFLIES_API_KEY: ${{ secrets.FIREFLIES_API_KEY }}

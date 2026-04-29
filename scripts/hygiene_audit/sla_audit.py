@@ -3,17 +3,20 @@
 # sla_audit.py — Daily SLA breach check (entry point)
 # =============================================================================
 # Runs every weekday at 8:00 AM ET (13:00 UTC) via GitHub Actions.
-# Much lighter than audit.py — no Fireflies, no AI, no full scorecard.
+# Lighter than audit.py — no Fireflies, no AI, no full scorecard.
 #
 # What it checks:
 #   1. New leads (lead_status=NEW, last 48h) → 30-min SLA response check
-#   2. Open deals → missing pipeline source + 14d+ stale SLA breach
-#   3. Fires immediate Slack DM + email for every breach found
+#   2. Open deals → missing pipeline source + newly stale (14d+) SLA breach
+#   3. Fires immediate Slack DM + email for every new breach found
 #
-# Monday's full audit.py also includes an SLA summary section — this daily
-# job catches breaches the same day so reps get immediate feedback.
+# FORCE MODE (testing only):
+#   Set env var  AUDIT_SLA_FORCE=1  to bypass the 48h new-breach window.
+#   This shows ALL stale deals, not just newly breached ones.
+#   Use this to verify notification format — revert to 0 after testing.
 # =============================================================================
 
+import os
 import sys
 import traceback
 from datetime import datetime, timezone
@@ -25,10 +28,14 @@ from config import IS_DEV, REPS
 
 
 def main():
-    env_label = "DEV" if IS_DEV else "PRODUCTION"
+    env_label  = "DEV" if IS_DEV else "PRODUCTION"
+    force_all  = os.environ.get("AUDIT_SLA_FORCE", "").strip() == "1"
+
     print("=" * 60)
     print(f"Kiro — Daily SLA Check — {datetime.now(tz=timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
     print(f"Env: {env_label}")
+    if force_all:
+        print("Mode: FORCE — showing ALL stale deals (48h window bypassed)")
     print("=" * 60)
 
     total_lead_breaches = 0
@@ -50,18 +57,27 @@ def main():
         traceback.print_exc()
 
     # ── 2. Deal SLA check ────────────────────────────────────────────────────
-    print("\n[Deal SLA] Checking open deals for stale SLA breaches...")
+    if force_all:
+        print("\n[Deal SLA] FORCE MODE — checking ALL stale deals (no 48h filter)...")
+    else:
+        print("\n[Deal SLA] Checking open deals for new stale SLA breaches (48h window)...")
+
     try:
         open_deals  = get_open_deals()
-        deal_result = check_deal_sla_breaches(open_deals)
+        # notify_only_new=False in force mode → show all stale deals
+        # notify_only_new=True  in normal mode → only deals that newly crossed 14d threshold
+        deal_result = check_deal_sla_breaches(open_deals, notify_only_new=not force_all)
 
         for oid, data in deal_result.items():
-            rep          = data["rep"]
-            breaches     = data["sla_breach"]       # capped to MAX_BREACH_DEALS_NOTIFY
-            total_count  = data["sla_breach_total"]  # real count before cap
+            rep         = data["rep"]
+            breaches    = data["sla_breach"]        # capped to MAX_BREACH_DEALS_NOTIFY
+            total_count = data["sla_breach_total"]  # full count before cap
 
             if breaches:
-                print(f"  {rep['name']}: {len(breaches)} new breach(es) (of {total_count} total stale) — notifying...")
+                print(
+                    f"  {rep['name']}: {len(breaches)} breach(es) shown "
+                    f"(of {total_count} total stale) — notifying..."
+                )
                 try:
                     notify_deal_sla_breaches(rep, breaches, total_count=total_count)
                     total_deal_breaches += len(breaches)
@@ -72,8 +88,10 @@ def main():
                 warnings = len(data["sla_warning"])
                 missing  = len(data["missing_source"])
                 print(
-                    f"  {rep['name']}: no new breaches today"
-                    f" | total_stale={total_count} | warnings={warnings} | missing_source={missing}"
+                    f"  {rep['name']}: no {'(force)' if force_all else 'new'} breaches"
+                    f" | total_stale={total_count}"
+                    f" | warnings={warnings}"
+                    f" | missing_source={missing}"
                 )
 
     except Exception as e:
@@ -82,9 +100,11 @@ def main():
 
     # ── Summary ───────────────────────────────────────────────────────────────
     print("\n" + "=" * 60)
-    print(f"Daily SLA check complete.")
+    print("Daily SLA check complete.")
     print(f"  Lead SLA breaches notified: {total_lead_breaches}")
     print(f"  Deal SLA breaches notified: {total_deal_breaches}")
+    if force_all:
+        print("  [FORCE MODE WAS ON — set AUDIT_SLA_FORCE=0 after testing]")
     print("=" * 60)
 
 
