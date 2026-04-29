@@ -326,12 +326,12 @@ def _get_pipeline_source(p: dict) -> str:
     """
     Read the deal pipeline source from whichever property is populated.
     HubSpot has two deal-level pipeline source fields:
-      - pipeline_source_sync : auto-synced by HubSpot (shown as 'Pipeline Source Sync')
+      - pipeline_sourc       : auto-synced by HubSpot (shown as Pipeline Source Sync in UI, API name truncated)
       - pipeline_source      : manual entry custom field
     Check sync field first (more reliable), fall back to manual field.
     """
     return (
-        (p.get("pipeline_source_sync") or "").strip()
+        (p.get("pipeline_sourc") or "").strip()
         or (p.get("pipeline_source")      or "").strip()
     )
 
