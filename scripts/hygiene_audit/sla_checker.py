@@ -270,18 +270,40 @@ def check_lead_sla_breaches() -> list:
 
 def _days_since(ts_str) -> int | None:
     """
-    Identical to checks.py _days_since — proven to work with HubSpot deal data.
-    Converts a millisecond timestamp string to days-since-then.
-    Falls back to createdate if notes_last_updated is absent.
+    Parse a HubSpot timestamp to days-since-then.
+
+    Handles both formats HubSpot returns for deal properties:
+      - ISO 8601 string: '2025-03-24T17:15:00Z' (used for notes_last_updated)
+      - Unix ms string:  '1745902800000' (used for some other properties)
+
+    Returns None only if the value is absent or completely unparseable.
     """
     if not ts_str:
         return None
+
+    now = datetime.now(tz=timezone.utc)
+    s   = str(ts_str).strip()
+
+    # ISO 8601 format: '2025-03-24T17:15:00Z', '2025-03-24T17:15:00.123Z'
+    if 'T' in s:
+        try:
+            clean = s.rstrip('Z').rstrip('.')
+            if '.' in clean:
+                clean = clean[:clean.index('.')]
+            dt = datetime.fromisoformat(clean).replace(tzinfo=timezone.utc)
+            return max(0, (now - dt).days)
+        except (ValueError, TypeError, AttributeError):
+            pass
+
+    # Unix millisecond timestamp: '1745902800000' or '1745902800000.0'
     try:
-        ts_ms = int(ts_str)
+        ts_ms = int(float(s))
         dt    = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc)
-        return max(0, (datetime.now(tz=timezone.utc) - dt).days)
-    except (ValueError, OSError):
-        return None
+        return max(0, (now - dt).days)
+    except (ValueError, OSError, OverflowError, TypeError):
+        pass
+
+    return None
 
 
 def _deal_days_stale(p: dict) -> int | None:
