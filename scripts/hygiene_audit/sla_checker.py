@@ -268,53 +268,35 @@ def check_lead_sla_breaches() -> list:
 # Deal SLA breach check
 # =============================================================================
 
-def _ts_to_ms(value: str) -> int | None:
+def _days_since(ts_str) -> int | None:
     """
-    Parse a HubSpot timestamp string to integer milliseconds.
-    HubSpot can return timestamps as clean integers ("1745902800000"),
-    decimal strings ("1745902800000.0"), or scientific notation.
-    int(float(v)) handles all three formats safely.
+    Identical to checks.py _days_since — proven to work with HubSpot deal data.
+    Converts a millisecond timestamp string to days-since-then.
+    Falls back to createdate if notes_last_updated is absent.
     """
-    if not value:
+    if not ts_str:
         return None
     try:
-        return int(float(value))
-    except (ValueError, TypeError, OverflowError):
+        ts_ms = int(ts_str)
+        dt    = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc)
+        return max(0, (datetime.now(tz=timezone.utc) - dt).days)
+    except (ValueError, OSError):
         return None
 
 
-def _deal_days_stale(p: dict, today: datetime) -> int | None:
+def _deal_days_stale(p: dict) -> int | None:
     """
-    Calculate how many days since the deal had any CRM activity.
-
-    Priority:
-      1. notes_last_updated (any CRM activity logged)
-      2. createdate fallback (deal age — worst case if never touched)
-
-    Uses int(float()) to handle HubSpot's variable timestamp string formats.
-    Returns None only if no valid timestamp is available at all.
+    Days since the deal had any CRM activity.
+    Uses the same logic as checks.py _days_since (proven working).
+    Falls back to createdate if notes_last_updated is null.
     """
-    # Try notes_last_updated first
-    ts_ms = _ts_to_ms(p.get("notes_last_updated"))
-    if ts_ms is not None:
-        try:
-            last_dt  = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc)
-            last_day = last_dt.replace(hour=0, minute=0, second=0, microsecond=0)
-            return max(0, (today - last_day).days)
-        except (OSError, OverflowError, ValueError):
-            pass
+    # Primary: notes_last_updated (last logged activity)
+    days = _days_since(p.get("notes_last_updated"))
+    if days is not None:
+        return days
 
-    # Fallback: createdate — deal has never been touched, stale for its full age
-    ts_ms = _ts_to_ms(p.get("createdate"))
-    if ts_ms is not None:
-        try:
-            create_dt  = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc)
-            create_day = create_dt.replace(hour=0, minute=0, second=0, microsecond=0)
-            return max(0, (today - create_day).days)
-        except (OSError, OverflowError, ValueError):
-            pass
-
-    return None
+    # Fallback: createdate (deal age — never touched since creation)
+    return _days_since(p.get("createdate"))
 
 
 def check_deal_sla_breaches(open_deals: list, notify_only_new: bool = True) -> dict:
@@ -373,7 +355,7 @@ def check_deal_sla_breaches(open_deals: list, notify_only_new: bool = True) -> d
             })
 
         # ── Calculate staleness ───────────────────────────────────────────────
-        days_stale = _deal_days_stale(p, today)
+        days_stale = _deal_days_stale(p)
 
         entry = {
             "id":              deal_id,
@@ -385,12 +367,15 @@ def check_deal_sla_breaches(open_deals: list, notify_only_new: bool = True) -> d
         }
 
         if len(debug_sample) < 5:
+            raw_lu = p.get("notes_last_updated")
+            raw_cd = p.get("createdate")
             debug_sample.append({
                 "name":      name[:40],
                 "stage":     deal_stage,
-                "last_upd":  p.get("notes_last_updated"),
-                "createdate":p.get("createdate"),
+                "last_upd":  raw_lu,
+                "createdate":raw_cd,
                 "stale":     days_stale,
+                "raw_lu_val": str(raw_lu)[:20] if raw_lu else "None",
             })
 
         # ── SLA tiers ─────────────────────────────────────────────────────────
@@ -431,8 +416,7 @@ def check_deal_sla_breaches(open_deals: list, notify_only_new: bool = True) -> d
         print(f"  [SLA] Sample deals (first {len(debug_sample)}):")
         for d in debug_sample:
             print(f"    stage={d['stage']!r:15} stale={str(d['stale']):6} "
-                  f"last_upd={'set' if d['last_upd'] else 'None':5} "
-                  f"createdate={'set' if d['createdate'] else 'None':5} "
+                  f"raw_ts={d.get('raw_lu_val', 'N/A'):22} "
                   f"name={d['name']!r}")
 
     return per_rep
