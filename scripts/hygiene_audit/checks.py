@@ -140,7 +140,8 @@ def _check_deal(deal: dict, today: datetime) -> dict:
         "created_from_email_no_followup": created_from_email_no_followup,
         # D3–D6
         "missing_amount":   _is_missing(p.get("amount")),
-        "missing_source":   _is_missing(p.get("pipeline_source")),
+        # D4: check pipeline_source_sync first (auto-synced), then pipeline_source (manual)
+        "missing_source":   _is_missing(p.get("pipeline_source_sync") or p.get("pipeline_source")),
         "missing_mrr":      _is_missing(p.get("mrr")),
         "missing_status":   _is_missing(p.get("status_")),
         # AI context payload

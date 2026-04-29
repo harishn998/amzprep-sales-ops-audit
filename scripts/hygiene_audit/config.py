@@ -218,7 +218,9 @@ DEAL_PROPERTIES = [
     "dealname", "dealstage", "pipeline", "closedate",
     "amount", "hubspot_owner_id",
     "notes_last_updated", "notes_last_contacted",
-    "pipeline_source", "mrr", "status_",
+    "pipeline_source",      # manual entry field
+    "pipeline_source_sync", # auto-synced from HubSpot (shown as Pipeline Source Sync)
+    "mrr", "status_",
     "hs_analytics_source", "createdate",
 ]
 

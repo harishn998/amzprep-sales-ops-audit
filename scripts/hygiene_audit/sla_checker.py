@@ -321,6 +321,20 @@ def _deal_days_stale(p: dict) -> int | None:
     return _days_since(p.get("createdate"))
 
 
+
+def _get_pipeline_source(p: dict) -> str:
+    """
+    Read the deal pipeline source from whichever property is populated.
+    HubSpot has two deal-level pipeline source fields:
+      - pipeline_source_sync : auto-synced by HubSpot (shown as 'Pipeline Source Sync')
+      - pipeline_source      : manual entry custom field
+    Check sync field first (more reliable), fall back to manual field.
+    """
+    return (
+        (p.get("pipeline_source_sync") or "").strip()
+        or (p.get("pipeline_source")      or "").strip()
+    )
+
 def check_deal_sla_breaches(open_deals: list, notify_only_new: bool = True) -> dict:
     """
     Check open deals for:
@@ -368,7 +382,7 @@ def check_deal_sla_breaches(open_deals: list, notify_only_new: bool = True) -> d
         deal_id = deal.get("id", "")
         name    = p.get("dealname") or f"Deal {deal_id}"
         url     = deal_url(deal_id)
-        source  = (p.get("pipeline_source") or "").strip()
+        source  = _get_pipeline_source(p)
 
         # ── Missing pipeline source ───────────────────────────────────────────
         if not source:
