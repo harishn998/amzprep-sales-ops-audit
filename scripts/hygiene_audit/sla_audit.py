@@ -56,13 +56,14 @@ def main():
         deal_result = check_deal_sla_breaches(open_deals)
 
         for oid, data in deal_result.items():
-            rep     = data["rep"]
-            breaches = data["sla_breach"]  # 14+ days only — immediate notification
+            rep          = data["rep"]
+            breaches     = data["sla_breach"]       # capped to MAX_BREACH_DEALS_NOTIFY
+            total_count  = data["sla_breach_total"]  # real count before cap
 
             if breaches:
-                print(f"  {rep['name']}: {len(breaches)} deal SLA breach(es) — notifying...")
+                print(f"  {rep['name']}: {len(breaches)} new breach(es) (of {total_count} total stale) — notifying...")
                 try:
-                    notify_deal_sla_breaches(rep, breaches)
+                    notify_deal_sla_breaches(rep, breaches, total_count=total_count)
                     total_deal_breaches += len(breaches)
                 except Exception as e:
                     print(f"  [ERROR] Notify deal breach failed for {rep['name']}: {e}")
@@ -71,8 +72,8 @@ def main():
                 warnings = len(data["sla_warning"])
                 missing  = len(data["missing_source"])
                 print(
-                    f"  {rep['name']}: no immediate breaches"
-                    f" | warnings={warnings} | missing_source={missing}"
+                    f"  {rep['name']}: no new breaches today"
+                    f" | total_stale={total_count} | warnings={warnings} | missing_source={missing}"
                 )
 
     except Exception as e:

@@ -298,26 +298,42 @@ def check_lead_sla_breaches() -> list:
 # Deal SLA check — pipeline source + stale severity
 # =============================================================================
 
-def check_deal_sla_breaches(open_deals: list) -> dict:
+# Max deals to show in a single SLA breach notification per rep
+# Prevents alert fatigue — rest summarised as count in the message
+MAX_BREACH_DEALS_NOTIFY = 10
+
+# Only alert on deals that became stale within this window (hours)
+# Prevents re-firing on the same old deals every single day
+BREACH_DETECTION_WINDOW_HOURS = 48
+
+
+def check_deal_sla_breaches(open_deals: list, notify_only_new: bool = True) -> dict:
     """
     Check all open deals for:
-      1. Missing pipeline_source  (immediate flag)
-      2. Stale 7–14 days          (warning tier)
-      3. Stale 14+ days           (SLA breach tier — notify immediately)
+      1. Missing pipeline_source  (always flagged)
+      2. Stale 7–14 days          (warning tier — weekly report only)
+      3. Stale 14+ days           (SLA breach tier)
+         - notify_only_new=True  → only alert on deals that crossed threshold
+                                   in the last 48h (prevents daily re-firing)
+         - notify_only_new=False → return all breaches (for weekly report)
 
-    Returns per-rep dict of breach lists.
+    Safety net: skips deals whose stage is in CLOSED_STAGE_IDS_STRICT,
+    catching any closed deals that the API filter may have missed.
     """
-    now_utc = datetime.now(tz=timezone.utc).replace(
-        hour=0, minute=0, second=0, microsecond=0
-    )
+    now_utc = datetime.now(tz=timezone.utc)
+    today   = now_utc.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    # Import strict closed stage set for in-memory double-check
+    from config import CLOSED_STAGE_IDS_STRICT, DEAL_SLA_WARNING_DAYS, DEAL_SLA_BREACH_DAYS
 
     per_rep: dict[str, dict] = {}
     for rep in REPS:
         per_rep[rep["owner_id"]] = {
             "rep":             rep,
-            "missing_source":  [],   # D4 — pipeline source blank
-            "sla_warning":     [],   # 7–14 days stale
-            "sla_breach":      [],   # 14+ days stale — notify
+            "missing_source":  [],
+            "sla_warning":     [],   # 7–14 days stale (weekly report)
+            "sla_breach":      [],   # 14+ days stale (notify immediately)
+            "sla_breach_total": 0,   # full count before capping
         }
 
     for deal in open_deals:
@@ -326,48 +342,89 @@ def check_deal_sla_breaches(open_deals: list) -> dict:
         if oid not in per_rep:
             continue
 
-        deal_id   = deal.get("id", "")
-        name      = p.get("dealname") or f"Deal {deal_id}"
-        url       = deal_url(deal_id)
-        source    = p.get("pipeline_source") or ""
-        last_upd  = p.get("notes_last_updated")
+        # ── Safety net: skip deals that are actually closed ──────────────────
+        # The API filter uses NOT_IN on stage names + IDs, but double-check
+        # here in case the query missed any closed stage variation.
+        deal_stage = (p.get("dealstage") or "").strip()
+        if deal_stage in CLOSED_STAGE_IDS_STRICT:
+            continue   # skip — deal is closed, not a hygiene issue
 
-        # D4 — Missing pipeline source
-        if not source.strip():
+        deal_id  = deal.get("id", "")
+        name     = p.get("dealname") or f"Deal {deal_id}"
+        url      = deal_url(deal_id)
+        source   = (p.get("pipeline_source") or "").strip()
+        last_upd = p.get("notes_last_updated")
+
+        # ── D4: Missing pipeline source ───────────────────────────────────────
+        if not source:
             per_rep[oid]["missing_source"].append({
                 "id": deal_id, "name": name, "url": url,
             })
 
-        # Stale tiers
+        # ── Calculate days stale ─────────────────────────────────────────────
         if last_upd:
             try:
-                ts    = datetime.fromtimestamp(int(last_upd) / 1000, tz=timezone.utc)
-                days  = (now_utc.replace(tzinfo=timezone.utc) - ts.replace(hour=0,minute=0,second=0,microsecond=0)).days
+                last_dt    = datetime.fromtimestamp(int(last_upd) / 1000, tz=timezone.utc)
+                last_day   = last_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+                days_stale = (today - last_day).days
             except (ValueError, OSError):
-                days = None
+                days_stale = None
         else:
-            days = None  # Never updated = worst stale
-
-        stale_days = days if days is not None else 9999
+            # notes_last_updated is null → deal has never been updated.
+            # We use createdate to determine when it was created and how long
+            # it has been sitting untouched.
+            createdate = p.get("createdate")
+            if createdate:
+                try:
+                    create_dt  = datetime.fromtimestamp(int(createdate) / 1000, tz=timezone.utc)
+                    create_day = create_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+                    days_stale = (today - create_day).days
+                except (ValueError, OSError):
+                    days_stale = None
+            else:
+                days_stale = None
 
         entry = {
-            "id": deal_id, "name": name, "url": url,
-            "days_stale": days,   # None = never active
+            "id":              deal_id,
+            "name":            name,
+            "url":             url,
+            "days_stale":      days_stale,
             "pipeline_source": source or "not set",
+            "deal_stage":      deal_stage,
+            "last_updated":    last_upd,
         }
 
-        if stale_days >= DEAL_SLA_BREACH_DAYS:
-            per_rep[oid]["sla_breach"].append(entry)
-        elif stale_days >= DEAL_SLA_WARNING_DAYS:
+        # ── SLA breach detection ──────────────────────────────────────────────
+        if days_stale is not None and days_stale >= DEAL_SLA_BREACH_DAYS:
+
+            if notify_only_new:
+                # Only include if the deal crossed the threshold RECENTLY.
+                # "Recently" = it became stale exactly DEAL_SLA_BREACH_DAYS days ago
+                # (i.e. within the last BREACH_DETECTION_WINDOW_HOURS hours).
+                # This prevents re-firing on the same stale deal every single day.
+                hours_since_threshold = (days_stale - DEAL_SLA_BREACH_DAYS) * 24
+                is_new_breach = hours_since_threshold <= BREACH_DETECTION_WINDOW_HOURS
+                if not is_new_breach:
+                    continue   # already stale before our window — skip
+
+            per_rep[oid]["sla_breach_total"] += 1
+            # Only store up to MAX_BREACH_DEALS_NOTIFY entries for notification
+            if len(per_rep[oid]["sla_breach"]) < MAX_BREACH_DEALS_NOTIFY:
+                per_rep[oid]["sla_breach"].append(entry)
+
+        elif days_stale is not None and days_stale >= DEAL_SLA_WARNING_DAYS:
             per_rep[oid]["sla_warning"].append(entry)
 
-    # Sort each list: worst (longest stale) first
+    # Sort: worst (longest stale) first
     for oid in per_rep:
-        for key in ("sla_warning", "sla_breach"):
-            per_rep[oid][key].sort(
-                key=lambda d: d["days_stale"] if d["days_stale"] is not None else 99999,
-                reverse=True,
-            )
+        per_rep[oid]["sla_breach"].sort(
+            key=lambda d: d["days_stale"] if d["days_stale"] is not None else 99999,
+            reverse=True,
+        )
+        per_rep[oid]["sla_warning"].sort(
+            key=lambda d: d["days_stale"] if d["days_stale"] is not None else 99999,
+            reverse=True,
+        )
 
     return per_rep
 

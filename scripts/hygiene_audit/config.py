@@ -230,7 +230,28 @@ CONTACT_PROPERTIES = [
     "createdate",   # NEW — needed for SLA deadline calculation
 ]
 
-CLOSED_STAGES = ["closedwon", "closedlost"]
+# Deal stages that are considered closed — both human-readable names AND
+# numeric stage IDs used in the AMZ Prep 2026 pipeline (portal 878268).
+# HubSpot stores dealstage as the stage internal value, which can be either
+# a name (e.g. "closedwon") or a pipeline-specific numeric ID.
+# Both forms must be listed here so the NOT_IN filter catches all closed deals.
+CLOSED_STAGES = [
+    # Standard HubSpot names
+    "closedwon",
+    "closedlost",
+    # AMZ Prep 2026 pipeline numeric stage IDs
+    "13390264",    # Closed Won
+    "13390265",    # Closed Lost
+    "1271308872",  # Partner Won (also closed — not actively pursued)
+    "13390263",    # Contract Sent (edge case — keep in open for now, excluded below)
+]
+
+# Stages that are definitely closed — used for SLA breach filtering
+# (stricter than CLOSED_STAGES — Partner Won is included)
+CLOSED_STAGE_IDS_STRICT = {
+    "13390264", "13390265", "1271308872",
+    "closedwon", "closedlost",
+}
 
 # -----------------------------------------------------------------------------
 # HubSpot record URL helpers

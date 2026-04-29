@@ -118,14 +118,17 @@ def _lead_breach_slack_text(breach: dict) -> str:
 # Deal SLA breach — Slack message
 # =============================================================================
 
-def _deal_breach_slack_text(rep: dict, breaches: list) -> str:
-    prefix = message_prefix()
+def _deal_breach_slack_text(rep: dict, breaches: list, total_count: int = 0) -> str:
+    prefix     = message_prefix()
+    shown      = len(breaches)
+    total      = max(total_count, shown)
+    count_str  = f"{total}" if total == shown else f"{shown} of {total}"
     lines  = [
         f"{prefix}*[DEAL SLA BREACH] — {rep['name']}*",
         f"Sent by Kiro  ·  <@{ARI['slack_id']}>",
         "",
-        f"*{len(breaches)} open deal(s) have had no CRM activity for 14+ days.*",
-        "_These deals are stale and may be losing momentum._",
+        f"*{count_str} deal(s) newly stale — no CRM activity for 14+ days.*",
+        "_Log activity or close-lost to clear this alert._",
         "",
     ]
 
@@ -380,10 +383,11 @@ def notify_lead_sla_breach(breach: dict) -> None:
     time.sleep(0.3)
 
 
-def notify_deal_sla_breaches(rep: dict, breaches: list) -> None:
+def notify_deal_sla_breaches(rep: dict, breaches: list, total_count: int = 0) -> None:
     """Send Slack DM + email for a rep's deal SLA breaches."""
     if not breaches:
         return
+    total_count = max(total_count, len(breaches))
 
     print(f"  [Notify] Deal SLA breach: {rep['name']} — {len(breaches)} deal(s)")
 
@@ -391,7 +395,7 @@ def notify_deal_sla_breaches(rep: dict, breaches: list) -> None:
     slack_ids  = resolve_slack_ids_for_sla_breach(rep)
     channel_id = _open_dm(slack_ids)
     if channel_id:
-        _slack_post(channel_id, _deal_breach_slack_text(rep, breaches))
+        _slack_post(channel_id, _deal_breach_slack_text(rep, breaches, total_count=total_count))
         print(f"    Slack DM sent to {slack_ids}")
 
     # Email
