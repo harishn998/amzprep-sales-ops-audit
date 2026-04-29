@@ -268,6 +268,21 @@ def check_lead_sla_breaches() -> list:
 # Deal SLA breach check
 # =============================================================================
 
+def _ts_to_ms(value: str) -> int | None:
+    """
+    Parse a HubSpot timestamp string to integer milliseconds.
+    HubSpot can return timestamps as clean integers ("1745902800000"),
+    decimal strings ("1745902800000.0"), or scientific notation.
+    int(float(v)) handles all three formats safely.
+    """
+    if not value:
+        return None
+    try:
+        return int(float(value))
+    except (ValueError, TypeError, OverflowError):
+        return None
+
+
 def _deal_days_stale(p: dict, today: datetime) -> int | None:
     """
     Calculate how many days since the deal had any CRM activity.
@@ -276,26 +291,27 @@ def _deal_days_stale(p: dict, today: datetime) -> int | None:
       1. notes_last_updated (any CRM activity logged)
       2. createdate fallback (deal age — worst case if never touched)
 
-    Returns None only if no timestamp is available at all.
-    Treats a deal with notes_last_updated=None as stale for its full age.
+    Uses int(float()) to handle HubSpot's variable timestamp string formats.
+    Returns None only if no valid timestamp is available at all.
     """
-    last_upd = p.get("notes_last_updated")
-    if last_upd:
+    # Try notes_last_updated first
+    ts_ms = _ts_to_ms(p.get("notes_last_updated"))
+    if ts_ms is not None:
         try:
-            last_dt  = datetime.fromtimestamp(int(last_upd) / 1000, tz=timezone.utc)
+            last_dt  = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc)
             last_day = last_dt.replace(hour=0, minute=0, second=0, microsecond=0)
-            return (today - last_day).days
-        except (ValueError, OSError):
+            return max(0, (today - last_day).days)
+        except (OSError, OverflowError, ValueError):
             pass
 
-    # Fallback: use createdate — deal has never been touched, stale for its full age
-    createdate = p.get("createdate")
-    if createdate:
+    # Fallback: createdate — deal has never been touched, stale for its full age
+    ts_ms = _ts_to_ms(p.get("createdate"))
+    if ts_ms is not None:
         try:
-            create_dt  = datetime.fromtimestamp(int(createdate) / 1000, tz=timezone.utc)
+            create_dt  = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc)
             create_day = create_dt.replace(hour=0, minute=0, second=0, microsecond=0)
-            return (today - create_day).days
-        except (ValueError, OSError):
+            return max(0, (today - create_day).days)
+        except (OSError, OverflowError, ValueError):
             pass
 
     return None
