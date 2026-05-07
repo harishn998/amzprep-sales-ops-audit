@@ -238,7 +238,7 @@ def _deal_card(deal: dict, stat: str) -> str:
         f'{pill}</div>'
         f'<p class="deal-stat">{stat}</p>'
         f'{ai_html}'
-        f'<div class="cta-wrap"><a href="{deal["url"]}" class="cta-btn">View in HubSpot &rarr;</a></div>'
+        f'<div style="text-align:center;margin:12px 0 2px"><a href="{deal["url"]}" style="display:inline-block;background:#1d4ed8;color:#ffffff;text-decoration:none;font-size:12px;font-weight:700;padding:9px 22px;border-radius:50px;letter-spacing:0.2px">View in HubSpot &rarr;</a></div>'
         f'</div>'
     )
 

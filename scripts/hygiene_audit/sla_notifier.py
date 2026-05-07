@@ -268,149 +268,211 @@ def _deal_breach_blocks(rep: dict, breaches: list, total_count: int = 0) -> list
 # Email helpers (unchanged from previous version)
 # =============================================================================
 
-_BREACH_STYLE = """<style>
-*{box-sizing:border-box;margin:0;padding:0}
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;
-     font-size:14px;color:#1a1a1a;background:#f0f2f5}
-.wrap{max-width:580px;margin:24px auto}
-.header{background:#7c1d1d;border-radius:10px 10px 0 0;padding:24px 32px;
-        display:flex;align-items:center;justify-content:space-between}
-.brand{color:#fff;font-size:18px;font-weight:700}
-.badge{background:rgba(255,255,255,.15);color:#fca5a5;font-size:11px;
-       font-weight:700;padding:4px 12px;border-radius:20px;letter-spacing:.8px}
-.dev-bar{background:#fef3c7;border-left:4px solid #f59e0b;padding:10px 20px;
-         font-size:12px;color:#92400e;font-weight:600}
-.body{background:#fff;padding:24px 32px}
-.alert-box{background:#fef2f2;border:1px solid #fecaca;border-left:4px solid #dc2626;
-           border-radius:8px;padding:16px 20px;margin:16px 0}
-.alert-title{font-size:15px;font-weight:700;color:#dc2626;margin-bottom:8px}
-.meta-row{display:flex;gap:24px;margin:10px 0;font-size:13px}
-.meta-label{color:#6b7280;font-weight:500;min-width:110px}
-.meta-val{color:#111;font-weight:600}
-.deal-list{list-style:none;padding:0;margin:12px 0}
-.deal-list li{padding:8px 0;border-bottom:1px solid #f3f4f6;font-size:13px}
-.deal-list li:last-child{border-bottom:none}
-.deal-list a{color:#0b1829;font-weight:600;text-decoration:none}
-.days-badge{display:inline-block;background:#fef2f2;color:#dc2626;font-size:11px;
-            font-weight:700;padding:2px 8px;border-radius:10px;margin-left:8px}
-.src-badge{display:inline-block;background:#fffbeb;color:#d97706;font-size:11px;
-           font-weight:700;padding:2px 8px;border-radius:10px;margin-left:4px}
-.action-box{background:#f0f9ff;border:1px solid #bae6fd;border-radius:8px;
-            padding:14px 18px;margin:16px 0}
-.action-box h3{font-size:13px;font-weight:700;color:#0b1829;margin-bottom:8px}
-.action-box ol{padding-left:18px;font-size:13px;color:#374151;line-height:1.8}
-.cta-btn{display:inline-block;background:#1d4ed8;color:#fff;font-size:13px;
-         font-weight:700;padding:10px 24px;border-radius:50px;text-decoration:none;
-         margin:16px 0}
-.footer-copy{padding:16px 32px 8px;font-size:12px;color:#6b7280}
-.footer-rule{border:none;border-top:1px solid #e5e7eb;margin:0 32px}
-.footer-links{padding:10px 32px 24px;font-size:12px;color:#6b7280}
-.footer-sep{color:#d1d5db;margin:0 10px}
-</style>"""
+
 
 
 def _lead_breach_email_html(breach: dict) -> str:
     rep     = breach["rep"]
     dev_bar = (
-        f'<div class="dev-bar">DEV TEST — Prod rep: {rep["name"]} ({rep["email"]})</div>'
+        '<div style="background:#fef9c3;border-left:4px solid #f59e0b;padding:10px 36px;'
+        'font-size:12px;color:#92400e;font-weight:600;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif">'
+        f'DEV TEST &mdash; Prod rep: {rep["name"]} ({rep["email"]})</div>'
     ) if IS_DEV else ""
 
-    extra_items = []
+    extra_rows = ""
     if breach.get("source_missing"):
-        extra_items.append("Pipeline source is not set on this contact")
+        extra_rows += (
+            '<tr>'
+            '<td style="padding:6px 0;color:#64748b;font-size:13px">Pipeline source</td>'
+            '<td style="padding:6px 0;font-weight:600;color:#dc2626;font-size:13px">Not set</td>'
+            '</tr>'
+        )
     elif breach.get("source_invalid"):
-        extra_items.append(f"Pipeline source '{breach['pipeline_source']}' is not a valid value")
+        extra_rows += (
+            f'<tr>'
+            f'<td style="padding:6px 0;color:#64748b;font-size:13px">Pipeline source</td>'
+            f'<td style="padding:6px 0;font-weight:600;color:#dc2626;font-size:13px">\'{breach["pipeline_source"]}\' (invalid)</td>'
+            f'</tr>'
+        )
     if breach.get("referral_missing"):
-        extra_items.append("Source = Referral but Referral Partner Name is blank")
-    extra_html = (
-        '<div style="background:#fffbeb;border:1px solid #fde68a;border-radius:6px;padding:10px 14px;margin:12px 0;font-size:13px;color:#92400e">'
-        "<strong>Additional issues:</strong><br>"
-        + "<br>".join(f"• {i}" for i in extra_items) + "</div>"
-    ) if extra_items else ""
+        extra_rows += (
+            '<tr>'
+            '<td style="padding:6px 0;color:#64748b;font-size:13px">Referral partner</td>'
+            '<td style="padding:6px 0;font-weight:600;color:#dc2626;font-size:13px">Blank (required)</td>'
+            '</tr>'
+        )
 
     hs_url = f"https://app.hubspot.com/contacts/{HUBSPOT_PORTAL_ID}"
-    return f"""<!DOCTYPE html>
-<html lang="en"><head><meta charset="UTF-8">{_BREACH_STYLE}</head>
-<body><div class="wrap">
-  <div class="header"><div class="brand">Kiro</div><div class="badge">LEAD SLA BREACH</div></div>
-  {dev_bar}
-  <div class="body">
-    <div class="alert-box">
-      <div class="alert-title">SLA Breach — No Response Within 30 Minutes</div>
-      <p style="font-size:13px;color:#374151">A new lead was submitted but no call, email, or note was logged within the 30-minute response window.</p>
-    </div>
-    <div class="meta-row"><span class="meta-label">Lead</span><span class="meta-val"><a href="{breach['contact_url']}" style="color:#0b1829">{breach['contact_name']}</a></span></div>
-    <div class="meta-row"><span class="meta-label">Email</span><span class="meta-val">{breach['contact_email'] or 'not set'}</span></div>
-    <div class="meta-row"><span class="meta-label">Submitted</span><span class="meta-val">{breach['submitted_str']}</span></div>
-    <div class="meta-row"><span class="meta-label">SLA deadline</span><span class="meta-val">{breach['deadline_str']}</span></div>
-    <div class="meta-row"><span class="meta-label">Overdue</span><span class="meta-val" style="color:#dc2626">{breach['hours_overdue']}h</span></div>
-    {extra_html}
-    <div class="action-box"><h3>Required actions</h3><ol>
-      <li>Log a call or email in HubSpot for this contact immediately</li>
-      <li>Set Pipeline Source to the correct dropdown value</li>
-      <li>If source = Referral, add the Referral Partner Name</li>
-    </ol></div>
-    <a href="{breach['contact_url']}" class="cta-btn">Open Contact in HubSpot &rarr;</a>
-  </div>
-  <p class="footer-copy">2026 &copy; &mdash; Kiro, AMZ Prep</p>
-  <hr class="footer-rule">
-  <p class="footer-links">
-    <a href="https://amzprep.com" style="color:#6b7280">AMZ Prep</a><span class="footer-sep">|</span>
-    <a href="{hs_url}" style="color:#6b7280">HubSpot CRM</a><span class="footer-sep">|</span>
-    <a href="mailto:{EMAIL_FROM_ADDRESS}?subject=unsubscribe" style="color:#6b7280">Unsubscribe</a>
-  </p>
-</div></body></html>"""
+    S = 'font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif'
+
+    return (
+        f'<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">'
+        f'<meta name="viewport" content="width=device-width,initial-scale=1"></head>'
+        f'<body style="margin:0;padding:0;background:#f4f6f8;{S}">'
+        f'<div style="max-width:600px;margin:0 auto;background:#f4f6f8">'
+
+        # Header
+        f'<div style="background:linear-gradient(135deg,#0b1829 0%,#1a3a5c 100%);border-radius:12px 12px 0 0;padding:32px 36px 28px">'
+        f'<p style="color:#ffffff;font-size:24px;font-weight:800;letter-spacing:1px;text-transform:uppercase;margin:0 0 5px">Kiro</p>'
+        f'<p style="color:#7fb3d3;font-size:12px;font-weight:500;margin:0 0 12px">Sales Ops Agent &mdash; AMZ Prep</p>'
+        f'<p style="color:#fca5a5;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;background:rgba(220,38,38,0.2);display:inline-block;padding:4px 14px;border-radius:50px;margin:0">Lead SLA Breach</p>'
+        f'</div>'
+        f'{dev_bar}'
+
+        # Body
+        f'<div style="background:#ffffff;padding:28px 36px">'
+
+        # Alert
+        f'<div style="background:#fef2f2;border:1px solid #fecaca;border-left:4px solid #dc2626;border-radius:8px;padding:16px 18px;margin-bottom:20px">'
+        f'<p style="font-size:15px;font-weight:700;color:#dc2626;margin:0 0 6px">No Response Within 30 Minutes</p>'
+        f'<p style="font-size:13px;color:#374151;margin:0">A new lead was submitted but no call, email, or note was logged within the 30-minute SLA window.</p>'
+        f'</div>'
+
+        # Section title
+        f'<p style="font-size:10px;font-weight:700;color:#1d4ed8;text-transform:uppercase;letter-spacing:1.5px;padding-bottom:8px;border-bottom:1.5px solid #e2e8f0;margin:0 0 14px">Lead Details</p>'
+
+        # Details table — fully inline
+        f'<table style="width:100%;border-collapse:collapse;font-size:13px;margin-bottom:20px">'
+        f'<tr><td style="padding:7px 0;color:#64748b;width:130px">Lead</td>'
+        f'<td style="padding:7px 0;font-weight:600"><a href="{breach["contact_url"]}" style="color:#1d4ed8;text-decoration:none">{breach["contact_name"]}</a></td></tr>'
+        f'<tr><td style="padding:7px 0;color:#64748b">Email</td>'
+        f'<td style="padding:7px 0;color:#374151">{breach["contact_email"] or "not set"}</td></tr>'
+        f'<tr><td style="padding:7px 0;color:#64748b">Submitted</td>'
+        f'<td style="padding:7px 0;color:#374151">{breach["submitted_str"]}</td></tr>'
+        f'<tr><td style="padding:7px 0;color:#64748b">SLA deadline</td>'
+        f'<td style="padding:7px 0;color:#374151">{breach["deadline_str"]}</td></tr>'
+        f'<tr><td style="padding:7px 0;color:#64748b">Overdue</td>'
+        f'<td style="padding:7px 0;font-weight:700;color:#dc2626">{breach["hours_overdue"]}h</td></tr>'
+        f'{extra_rows}'
+        f'</table>'
+
+        # Actions section title
+        f'<p style="font-size:10px;font-weight:700;color:#1d4ed8;text-transform:uppercase;letter-spacing:1.5px;padding-bottom:8px;border-bottom:1.5px solid #e2e8f0;margin:0 0 14px">Required Actions</p>'
+        f'<div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:14px 18px;margin-bottom:20px">'
+        f'<ol style="padding-left:18px;font-size:13px;color:#1e3a5f;line-height:1.9;margin:0">'
+        f'<li>Log a call or email in HubSpot for this contact immediately</li>'
+        f'<li>Set Pipeline Source to the correct dropdown value</li>'
+        f'<li>If source = Referral, add the Referral Partner Name</li>'
+        f'</ol></div>'
+
+        # CTA button — fully inline, no class
+        f'<div style="text-align:center;margin:20px 0 8px">'
+        f'<a href="{breach["contact_url"]}" style="display:inline-block;background:#1d4ed8;color:#ffffff;text-decoration:none;font-size:13px;font-weight:700;padding:11px 28px;border-radius:50px;letter-spacing:0.3px">Open Contact in HubSpot &rarr;</a>'
+        f'</div></div>'
+
+        # Footer
+        f'<p style="padding:16px 36px 6px;font-size:11px;color:#64748b;background:#ffffff;margin:0">2026 &copy; &mdash; Kiro, AMZ Prep</p>'
+        f'<hr style="border:none;border-top:1px solid #e2e8f0;margin:0 36px">'
+        f'<p style="padding:8px 36px 24px;font-size:11px;color:#64748b;background:#ffffff;margin:0">'
+        f'<a href="https://amzprep.com" style="color:#64748b">AMZ Prep</a>'
+        f'<span style="color:#cbd5e1;margin:0 8px">|</span>'
+        f'<a href="{hs_url}" style="color:#64748b">HubSpot CRM</a>'
+        f'<span style="color:#cbd5e1;margin:0 8px">|</span>'
+        f'<a href="mailto:{EMAIL_FROM_ADDRESS}?subject=unsubscribe" style="color:#64748b">Unsubscribe</a>'
+        f'</p>'
+        f'</div></body></html>'
+    )
 
 
 def _deal_breach_email_html(rep: dict, breaches: list, total_count: int = 0) -> str:
     dev_bar = (
-        f'<div class="dev-bar">DEV TEST — Prod rep: {rep["name"]} ({rep["email"]})</div>'
+        '<div style="background:#fef9c3;border-left:4px solid #f59e0b;padding:10px 36px;'
+        'font-size:12px;color:#92400e;font-weight:600;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif">'
+        f'DEV TEST &mdash; Prod rep: {rep["name"]} ({rep["email"]})</div>'
     ) if IS_DEV else ""
-    total   = max(total_count, len(breaches))
-    hs_url  = f"https://app.hubspot.com/contacts/{HUBSPOT_PORTAL_ID}/deals"
 
-    rows = ""
+    total  = max(total_count, len(breaches))
+    hs_url = f"https://app.hubspot.com/contacts/{HUBSPOT_PORTAL_ID}/deals"
+    S = 'font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif'
+
+    deal_rows = ""
     for d in breaches[:10]:
-        days_str = f"{d['days_stale']}d" if d.get("days_stale") is not None else "never active"
-        src_flag = '<span class="src-badge">no pipeline source</span>' if d.get("pipeline_source") == "not set" else ""
-        rows += (
-            f'<li><a href="{d["url"]}">{d["name"]}</a>'
-            f'<span class="days-badge">{days_str} inactive</span>{src_flag}</li>'
+        days_str = f"{d['days_stale']}d inactive" if d.get("days_stale") is not None else "no activity ever"
+        src_flag = ""
+        if d.get("pipeline_source") == "not set":
+            src_flag = (
+                '<span style="display:inline-block;background:#fffbeb;color:#d97706;'
+                'font-size:10px;font-weight:700;padding:2px 8px;border-radius:50px;margin-left:6px">'
+                'no pipeline source</span>'
+            )
+        deal_rows += (
+            f'<tr>'
+            f'<td style="padding:9px 10px;border-bottom:1px solid #f1f5f9;font-size:13px;font-weight:600;color:#0b1829">'
+            f'<a href="{d["url"]}" style="color:#0b1829;text-decoration:none">{d["name"]}</a></td>'
+            f'<td style="padding:9px 10px;border-bottom:1px solid #f1f5f9;font-size:13px;white-space:nowrap">'
+            f'<span style="background:#fef2f2;color:#dc2626;font-size:11px;font-weight:700;padding:2px 8px;border-radius:50px">{days_str}</span>'
+            f'{src_flag}</td>'
+            f'</tr>'
         )
     if total > 10:
-        rows += f'<li style="color:#6b7280;font-style:italic">...and {total - 10} more in HubSpot</li>'
+        deal_rows += (
+            f'<tr><td colspan="2" style="padding:9px 10px;font-size:12px;color:#94a3b8;font-style:italic">'
+            f'+ {total - 10} more &mdash; <a href="{hs_url}" style="color:#1d4ed8">open HubSpot to see all</a>'
+            f'</td></tr>'
+        )
 
-    return f"""<!DOCTYPE html>
-<html lang="en"><head><meta charset="UTF-8">{_BREACH_STYLE}</head>
-<body><div class="wrap">
-  <div class="header"><div class="brand">Kiro</div><div class="badge">DEAL SLA BREACH</div></div>
-  {dev_bar}
-  <div class="body">
-    <div class="alert-box">
-      <div class="alert-title">Deal SLA Breach &mdash; {total} Deal{'s' if total != 1 else ''} Stale 14+ Days</div>
-      <p style="font-size:13px;color:#374151">The following open deals have had no CRM activity for 14 or more days and are at risk of going cold.</p>
-    </div>
-    <ul class="deal-list">{rows}</ul>
-    <div class="action-box"><h3>Required actions this week</h3><ol>
-      <li>Log a call, email, or note on each deal listed above</li>
-      <li>Fill in Pipeline Source on any deal where it is blank</li>
-      <li>Close-lost any deal that is no longer being actively pursued</li>
-    </ol></div>
-    <a href="{hs_url}" class="cta-btn">Open HubSpot Deals &rarr;</a>
-  </div>
-  <p class="footer-copy">2026 &copy; &mdash; Kiro, AMZ Prep</p>
-  <hr class="footer-rule">
-  <p class="footer-links">
-    <a href="https://amzprep.com" style="color:#6b7280">AMZ Prep</a><span class="footer-sep">|</span>
-    <a href="{hs_url}" style="color:#6b7280">HubSpot Deals</a><span class="footer-sep">|</span>
-    <a href="mailto:{EMAIL_FROM_ADDRESS}?subject=unsubscribe" style="color:#6b7280">Unsubscribe</a>
-  </p>
-</div></body></html>"""
+    return (
+        f'<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">'
+        f'<meta name="viewport" content="width=device-width,initial-scale=1"></head>'
+        f'<body style="margin:0;padding:0;background:#f4f6f8;{S}">'
+        f'<div style="max-width:600px;margin:0 auto;background:#f4f6f8">'
+
+        # Header
+        f'<div style="background:linear-gradient(135deg,#0b1829 0%,#1a3a5c 100%);border-radius:12px 12px 0 0;padding:32px 36px 28px">'
+        f'<p style="color:#ffffff;font-size:24px;font-weight:800;letter-spacing:1px;text-transform:uppercase;margin:0 0 5px">Kiro</p>'
+        f'<p style="color:#7fb3d3;font-size:12px;font-weight:500;margin:0 0 12px">Sales Ops Agent &mdash; AMZ Prep</p>'
+        f'<p style="color:#fca5a5;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;background:rgba(220,38,38,0.2);display:inline-block;padding:4px 14px;border-radius:50px;margin:0">Deal SLA Breach</p>'
+        f'</div>'
+        f'{dev_bar}'
+
+        # Body
+        f'<div style="background:#ffffff;padding:28px 36px">'
+
+        # Alert
+        f'<div style="background:#fef2f2;border:1px solid #fecaca;border-left:4px solid #dc2626;border-radius:8px;padding:16px 18px;margin-bottom:20px">'
+        f'<p style="font-size:15px;font-weight:700;color:#dc2626;margin:0 0 6px">Deal SLA Breach &mdash; {total} Deal{"s" if total != 1 else ""} Stale 14+ Days</p>'
+        f'<p style="font-size:13px;color:#374151;margin:0">The following open deals have had no CRM activity for 14 or more days and are at risk of going cold.</p>'
+        f'</div>'
+
+        # Section title
+        f'<p style="font-size:10px;font-weight:700;color:#1d4ed8;text-transform:uppercase;letter-spacing:1.5px;padding-bottom:8px;border-bottom:1.5px solid #e2e8f0;margin:0 0 14px">Stale Deals</p>'
+
+        # Deals table — fully inline
+        f'<table style="width:100%;border-collapse:collapse;margin-bottom:20px">'
+        f'<thead><tr style="background:#f1f5f9">'
+        f'<th style="padding:8px 10px;text-align:left;font-size:10px;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:.8px;border-bottom:2px solid #e2e8f0">Deal</th>'
+        f'<th style="padding:8px 10px;text-align:left;font-size:10px;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:.8px;border-bottom:2px solid #e2e8f0">Activity</th>'
+        f'</tr></thead>'
+        f'<tbody>{deal_rows}</tbody></table>'
+
+        # Actions
+        f'<p style="font-size:10px;font-weight:700;color:#1d4ed8;text-transform:uppercase;letter-spacing:1.5px;padding-bottom:8px;border-bottom:1.5px solid #e2e8f0;margin:0 0 14px">Required Actions This Week</p>'
+        f'<div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:14px 18px;margin-bottom:20px">'
+        f'<ol style="padding-left:18px;font-size:13px;color:#1e3a5f;line-height:1.9;margin:0">'
+        f'<li>Log a call, email, or note on each deal listed above</li>'
+        f'<li>Fill in Pipeline Source on any deal where it is blank</li>'
+        f'<li>Close-lost any deal that is no longer being actively pursued</li>'
+        f'</ol></div>'
+
+        # CTA — fully inline
+        f'<div style="text-align:center;margin:20px 0 8px">'
+        f'<a href="{hs_url}" style="display:inline-block;background:#1d4ed8;color:#ffffff;text-decoration:none;font-size:13px;font-weight:700;padding:11px 28px;border-radius:50px;letter-spacing:0.3px">Open HubSpot Deals &rarr;</a>'
+        f'</div></div>'
+
+        # Footer
+        f'<p style="padding:16px 36px 6px;font-size:11px;color:#64748b;background:#ffffff;margin:0">2026 &copy; &mdash; Kiro, AMZ Prep</p>'
+        f'<hr style="border:none;border-top:1px solid #e2e8f0;margin:0 36px">'
+        f'<p style="padding:8px 36px 24px;font-size:11px;color:#64748b;background:#ffffff;margin:0">'
+        f'<a href="https://amzprep.com" style="color:#64748b">AMZ Prep</a>'
+        f'<span style="color:#cbd5e1;margin:0 8px">|</span>'
+        f'<a href="{hs_url}" style="color:#64748b">HubSpot Deals</a>'
+        f'<span style="color:#cbd5e1;margin:0 8px">|</span>'
+        f'<a href="mailto:{EMAIL_FROM_ADDRESS}?subject=unsubscribe" style="color:#64748b">Unsubscribe</a>'
+        f'</p>'
+        f'</div></body></html>'
+    )
 
 
-# =============================================================================
-# Public notification functions
-# =============================================================================
 
 def notify_lead_sla_breach(breach: dict) -> None:
     """Send Block Kit Slack DM + email for a single lead SLA breach."""
