@@ -10,11 +10,7 @@ import os
 import time
 import json
 import requests
-import sendgrid
-from sendgrid.helpers.mail import (
-    Mail, To, Cc, Content, Header,
-    TrackingSettings, ClickTracking, OpenTracking,
-)
+import resend
 from config import (
     ARI, IS_DEV, EMAIL_FROM_ADDRESS, EMAIL_FROM_NAME,
     resolve_slack_ids_for_sla_breach, resolve_email,
@@ -429,31 +425,24 @@ def notify_lead_sla_breach(breach: dict) -> None:
         _post_blocks(channel_id, blocks, fallback)
         print(f"    Slack DM sent to {slack_ids}")
 
-    sg       = sendgrid.SendGridAPIClient(api_key=os.environ.get("SENDGRID_API_KEY", ""))
+    api_key  = os.environ.get("RESEND_API_KEY", "")
     to_email = resolve_email(rep)
     cc_list  = resolve_sla_breach_email_cc(to_email)
-    msg      = Mail()
-    msg.from_email = (EMAIL_FROM_ADDRESS, EMAIL_FROM_NAME)
-    msg.subject    = f"[Lead SLA Breach] {rep['first_name']} — {breach['contact_name']}"
-    msg.add_to(To(to_email))
-    for addr in cc_list:
-        msg.add_cc(Cc(addr))
-    msg.add_content(Content("text/plain",
-        f"Lead SLA breach: {breach['contact_name']} — overdue {breach['hours_overdue']}h.\n"
-        f"Submitted: {breach['submitted_str']}\nDeadline: {breach['deadline_str']}\n"
-        f"Open: {breach['contact_url']}"
-    ))
-    msg.add_content(Content("text/html", _lead_breach_email_html(breach)))
-    tracking = TrackingSettings()
-    tracking.click_tracking = ClickTracking(enable=False, enable_text=False)
-    tracking.open_tracking  = OpenTracking(enable=False)
-    msg.tracking_settings   = tracking
-    msg.add_header(Header("List-Unsubscribe", f"<mailto:{EMAIL_FROM_ADDRESS}?subject=unsubscribe>"))
-    try:
-        resp = sg.send(msg)
-        print(f"    Email sent → {to_email} (HTTP {resp.status_code})")
-    except Exception as e:
-        print(f"    Email FAILED: {e}")
+    if api_key:
+        resend.api_key = api_key
+        try:
+            r = resend.Emails.send({
+                "from":    f"{EMAIL_FROM_NAME} <{EMAIL_FROM_ADDRESS}>",
+                "to":      [to_email],
+                "cc":      cc_list,
+                "subject": f"[Lead SLA Breach] {rep['first_name']} — {breach['contact_name']}",
+                "html":    _lead_breach_email_html(breach),
+                "text":    f"Lead SLA breach: {breach['contact_name']} {breach['hours_overdue']}h overdue. {breach['contact_url']}",
+                "headers": {"List-Unsubscribe": f"<mailto:{EMAIL_FROM_ADDRESS}?subject=unsubscribe>"},
+            })
+            print(f"    Email sent via Resend → {to_email}")
+        except Exception as e:
+            print(f"    Email FAILED: {e}")
     time.sleep(0.3)
 
 
@@ -473,29 +462,22 @@ def notify_deal_sla_breaches(rep: dict, breaches: list, total_count: int = 0) ->
         _post_blocks(channel_id, blocks, fallback)
         print(f"    Slack DM sent to {slack_ids}")
 
-    sg       = sendgrid.SendGridAPIClient(api_key=os.environ.get("SENDGRID_API_KEY", ""))
+    api_key  = os.environ.get("RESEND_API_KEY", "")
     to_email = resolve_email(rep)
     cc_list  = resolve_sla_breach_email_cc(to_email)
-    msg      = Mail()
-    msg.from_email = (EMAIL_FROM_ADDRESS, EMAIL_FROM_NAME)
-    msg.subject    = f"[Deal SLA Breach] {rep['first_name']} — {total} deal{'s' if total != 1 else ''} stale 14+ days"
-    msg.add_to(To(to_email))
-    for addr in cc_list:
-        msg.add_cc(Cc(addr))
-    msg.add_content(Content("text/plain",
-        f"Deal SLA breach: {total} open deal(s) stale 14+ days.\n"
-        + "\n".join(f"- {d['name']} ({d.get('days_stale','?')}d)" for d in breaches[:5])
-        + f"\nOpen HubSpot: https://app.hubspot.com/contacts/{HUBSPOT_PORTAL_ID}/deals"
-    ))
-    msg.add_content(Content("text/html", _deal_breach_email_html(rep, breaches, total_count=total)))
-    tracking = TrackingSettings()
-    tracking.click_tracking = ClickTracking(enable=False, enable_text=False)
-    tracking.open_tracking  = OpenTracking(enable=False)
-    msg.tracking_settings   = tracking
-    msg.add_header(Header("List-Unsubscribe", f"<mailto:{EMAIL_FROM_ADDRESS}?subject=unsubscribe>"))
-    try:
-        resp = sg.send(msg)
-        print(f"    Email sent → {to_email} (HTTP {resp.status_code})")
-    except Exception as e:
-        print(f"    Email FAILED: {e}")
+    if api_key:
+        resend.api_key = api_key
+        try:
+            r = resend.Emails.send({
+                "from":    f"{EMAIL_FROM_NAME} <{EMAIL_FROM_ADDRESS}>",
+                "to":      [to_email],
+                "cc":      cc_list,
+                "subject": f"[Deal SLA Breach] {rep['first_name']} — {total} deal{'s' if total != 1 else ''} stale 14+ days",
+                "html":    _deal_breach_email_html(rep, breaches, total_count=total),
+                "text":    f"Deal SLA breach: {total} deal(s) stale 14+ days. Open HubSpot: https://app.hubspot.com/contacts/{HUBSPOT_PORTAL_ID}/deals",
+                "headers": {"List-Unsubscribe": f"<mailto:{EMAIL_FROM_ADDRESS}?subject=unsubscribe>"},
+            })
+            print(f"    Email sent via Resend → {to_email}")
+        except Exception as e:
+            print(f"    Email FAILED: {e}")
     time.sleep(0.3)

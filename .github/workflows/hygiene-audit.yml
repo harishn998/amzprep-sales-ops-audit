@@ -51,7 +51,7 @@ jobs:
           HUBSPOT_TOKEN:     ${{ secrets.HUBSPOT_TOKEN }}
           SLACK_BOT_TOKEN:   ${{ secrets.SLACK_BOT_TOKEN }}
           FIREFLIES_API_KEY: ${{ secrets.FIREFLIES_API_KEY }}
-          SENDGRID_API_KEY:  ${{ secrets.SENDGRID_API_KEY }}
+          RESEND_API_KEY:    ${{ secrets.RESEND_API_KEY }}
           OPENAI_API_KEY:    ${{ secrets.OPENAI_API_KEY }}
         run: python audit.py
 
@@ -76,7 +76,7 @@ jobs:
           HUBSPOT_TOKEN:     ${{ secrets.HUBSPOT_TOKEN }}
           SLACK_BOT_TOKEN:   ${{ secrets.SLACK_BOT_TOKEN }}
           FIREFLIES_API_KEY: ${{ secrets.FIREFLIES_API_KEY }}
-          SENDGRID_API_KEY:  ${{ secrets.SENDGRID_API_KEY }}
+          RESEND_API_KEY:    ${{ secrets.RESEND_API_KEY }}
           OPENAI_API_KEY:    ${{ secrets.OPENAI_API_KEY }}
         run: python audit.py
 
@@ -101,7 +101,7 @@ jobs:
           AUDIT_SLA_FORCE:   "0"     # never force in scheduled run
           HUBSPOT_TOKEN:     ${{ secrets.HUBSPOT_TOKEN }}
           SLACK_BOT_TOKEN:   ${{ secrets.SLACK_BOT_TOKEN }}
-          SENDGRID_API_KEY:  ${{ secrets.SENDGRID_API_KEY }}
+          RESEND_API_KEY:    ${{ secrets.RESEND_API_KEY }}
         run: python sla_audit.py
 
   # ── Manual trigger ─────────────────────────────────────────────────────────
@@ -126,7 +126,7 @@ jobs:
           HUBSPOT_TOKEN:     ${{ secrets.HUBSPOT_TOKEN }}
           SLACK_BOT_TOKEN:   ${{ secrets.SLACK_BOT_TOKEN }}
           FIREFLIES_API_KEY: ${{ secrets.FIREFLIES_API_KEY }}
-          SENDGRID_API_KEY:  ${{ secrets.SENDGRID_API_KEY }}
+          RESEND_API_KEY:    ${{ secrets.RESEND_API_KEY }}
           OPENAI_API_KEY:    ${{ secrets.OPENAI_API_KEY }}
         run: |
           if [ "$AUDIT_MODE" = "sla" ]; then

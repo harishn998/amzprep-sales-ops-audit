@@ -206,7 +206,7 @@ def message_prefix() -> str:
 # -----------------------------------------------------------------------------
 # Email sending
 # -----------------------------------------------------------------------------
-EMAIL_FROM_ADDRESS = "harishnath@amzprep.com"
+EMAIL_FROM_ADDRESS = "reports@amzprep.com"   # Resend verified sender
 EMAIL_FROM_NAME    = "Kiro — AMZ Prep Sales Ops"
 
 # -----------------------------------------------------------------------------
@@ -218,9 +218,7 @@ DEAL_PROPERTIES = [
     "dealname", "dealstage", "pipeline", "closedate",
     "amount", "hubspot_owner_id",
     "notes_last_updated", "notes_last_contacted",
-    "pipeline_source",  # manual entry (Deal Source)
-    "pipeline_sourc",    # Pipeline Source Sync (auto-synced — API name truncated by HubSpot)
-    "mrr", "status_",
+    "pipeline_source", "mrr", "status_",
     "hs_analytics_source", "createdate",
 ]
 
